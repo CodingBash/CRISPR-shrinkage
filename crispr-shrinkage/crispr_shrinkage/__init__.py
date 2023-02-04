@@ -11,6 +11,16 @@ class Guide:
         self.pop1_raw_count_reps = np.asarray(pop1_raw_count_reps)
         self.pop2_raw_count_reps = np.asarray(pop2_raw_count_reps)
 
+class ShrinkageResult:
+    def __init__(self,  guide_count_beta_samples_normalized_list: List[List[float]],
+            guide_count_LFC_samples_normalized_list: List[List[float]],
+            guide_count_posterior_beta_samples_normalized_list: List[List[float]],
+            guide_count_posterior_LFC_samples_normalized_list: List[List[float]]):
+            self.guide_count_beta_samples_normalized_list=guide_count_beta_samples_normalized_list
+            self.guide_count_LFC_samples_normalized_list=guide_count_LFC_samples_normalized_list
+            self.guide_count_posterior_beta_samples_normalized_list=guide_count_posterior_beta_samples_normalized_list
+            self.guide_count_posterior_LFC_samples_normalized_list=guide_count_posterior_LFC_samples_normalized_list
+
 class StatisticalHelperMethods:
     @staticmethod
     def get_ols_estimators(X, Y):
@@ -54,6 +64,54 @@ class StatisticalHelperMethods:
     @staticmethod
     def KL_beta(alpha_f, beta_f, alpha_g, beta_g):
         return np.log(scipy.special.beta(alpha_g, beta_g)/(scipy.special.beta(alpha_f, beta_f))) + ((alpha_f - alpha_g)*(scipy.special.digamma(alpha_f) - scipy.special.digamma(alpha_f+beta_f))) + ((beta_f - beta_g)*(scipy.special.digamma(beta_f) - scipy.special.digamma(alpha_f+beta_f)))
+    
+    @staticmethod
+    def normalize_beta_distribution(posterior_beta_samples, control_beta_samples, baseline=0.5):
+        return np.asarray([posterior_beta_samples[i]*(baseline/control_beta_samples[i]) if posterior_beta_samples[i] <= control_beta_samples[i] else 1- ((1-baseline)/(1-control_beta_samples[i]))*(1-posterior_beta_samples[i]) for i, _ in enumerate(list(posterior_beta_samples))])
+
+def perform_score_shrinkage(each_guide: Guide, negative_control_guide_pop1_total_normalized_counts_reps: List[float], negative_control_guide_pop2_total_normalized_counts_reps, List[float], shrinkage_prior_strength: List[float], prior_alpha: List[float], prior_beta: List[float], baseline_proportion: float,  monte_carlo_trials: int, random_seed: int, num_replicates: int) -> ShrinkageResult:
+    shrinkage_prior_alpha = shrinkage_prior_strength * prior_alpha
+    shrinkage_prior_beta = shrinkage_prior_strength * prior_beta
+
+    #
+    # Monte-Carlo sampling of beta distributions (i.e. conjugate priors and posterior distributions)
+    #
+
+    # This is for visualization of the prior
+    shrinkage_prior_beta_samples_list: List[List[float]] = np.asarray([beta.rvs(shrinkage_prior_alpha[rep_i], shrinkage_prior_beta[rep_i], size=monte_carlo_trials, random_state=random_seed) for rep_i in range(num_replicates)])
+
+    # This is for visualization of the non-influenced data beta distribution
+    guide_count_beta_samples_list: List[List[float]] = np.asarray([beta.rvs(each_guide.pop1_normalized_count_reps, each_guide.pop2_normalized_count_reps, size=monte_carlo_trials, random_state=random_seed) for rep_i in range(num_replicates)])
+
+    # This is used for normalization of the non-influced data beta distribution
+    control_count_beta_samples_list: List[List[float]] = np.asarray([beta.rvs(negative_control_guide_pop1_total_normalized_counts_reps[rep_i], negative_control_guide_pop2_total_normalized_counts_reps[rep_i], size=monte_carlo_trials, random_state=random_seed) for rep_i in range(num_replicates)])
+
+    # This is the final shrunk posterior
+    guide_count_posterior_beta_samples_list: List[List[float]] = np.asarray([beta.rvs(shrinkage_prior_alpha + each_guide.pop1_normalized_count_reps, shrinkage_prior_beta + each_guide.pop2_normalized_count_reps, size=monte_carlo_trials, random_state=random_seed) for rep_i in range(num_replicates)])
+
+    # This is used for normalization
+    control_count_posterior_beta_samples_list: List[List[float]] = np.asarray([beta.rvs(shrinkage_prior_alpha + negative_control_guide_pop1_total_normalized_counts_reps[rep_i], shrinkage_prior_beta + negative_control_guide_pop2_total_normalized_counts_reps[rep_i], size=monte_carlo_trials, random_state=random_seed) for rep_i in range(num_replicates)])
+
+    #
+    # Normalization of posterior distributions
+    #
+
+    # Normalize non-influenced beta samples
+    guide_count_beta_samples_normalized_list: List[List[float]] = np.asarray([StatisticalHelperMethods.normalize_beta_distribution(guide_count_beta_samples_list[rep_i], control_count_beta_samples_list[rep_i], baseline_proportion) for rep_i in range(reps)])
+
+    # Normalize the posterior
+    guide_count_posterior_beta_samples_normalized_list: List[List[float]] = np.asarray([StatisticalHelperMethods.normalize_beta_distribution(guide_count_posterior_beta_samples_list[rep_i], control_count_posterior_beta_samples_list[rep_i], baseline_proportion) for rep_i in range(reps)])
+
+    guide_count_LFC_samples_normalized_list = np.log(guide_count_beta_samples_normalized_list/baseline_proportion)
+    guide_count_posterior_LFC_samples_normalized_list = np.log(guide_count_beta_samples_normalized_list/baseline_proportion)
+
+    # NOTE: When needed, I can add more to this object
+    shrinkage_result = ShrinkageResult(guide_count_beta_samples_normalized_list=guide_count_beta_samples_normalized_list,
+    guide_count_LFC_samples_normalized_list=guide_count_LFC_samples_normalized_list,
+    guide_count_posterior_beta_samples_normalized_list=guide_count_posterior_beta_samples_normalized_list,
+    guide_count_posterior_LFC_samples_normalized_list=guide_count_posterior_LFC_samples_normalized_list)
+
+    return shrinkage_result
 
 def optimize_score_shrinkage_prior_strength():
     pass # TODO: Add here
@@ -109,7 +167,8 @@ def perform_shrinkage(
     monte_carlo_trials: int = 1000,
     enable_spatial_prior: bool = False,
     spatial_bandwidth: int = 1,
-    spatial_imputation_prior_strength: Union[List[float], None] = None, # This could be optimized by maximizing correlation of guide with neighborhood (perhaps in binomial GLM fashion?)
+    spatial_imputation_prior_strength: Union[List[float], None] = None, # This could be optimized by maximizing correlation of guide with neighborhood (perhaps in binomial GLM fashion?),
+    baseline_proportion: float = 0.5, # TODO: Perform validation between (0,1), also accept None value for perfrming no normalization (or have that be another argument)
     shrinkage_prior_strength: Union[List[float], None] = None, 
     random_seed: Union[int, None] = None
     ):
@@ -214,15 +273,11 @@ def perform_shrinkage(
                 pop2_spatial_posterior_beta = (spatial_imputation_prior_strength_test*negative_control_guide_pop2_total_normalized_counts_reps) + each_guide_pop2_spatial_contribution
                 prior_beta = pop2_spatial_posterior_beta
                 
-            shrinkage_prior_alpha = shrinkage_prior_strength * prior_alpha
-            shrinkage_prior_beta = shrinkage_prior_strength * prior_beta
 
-            # TODO: LEFTOFF OFF HERE - Just finished code for optimizing imputational stage, now starting shrinkage stage, which is just translating the code from the notebook to here. The two code lines above is the priors, now continue (by seeing shrink_LFC_from_counts)
+            
+            
 
 
-                pass
-            else:
-                pass
 
 
         # Perform final fit
