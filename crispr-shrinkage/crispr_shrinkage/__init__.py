@@ -69,9 +69,9 @@ class StatisticalHelperMethods:
     def normalize_beta_distribution(posterior_beta_samples, control_beta_samples, baseline=0.5):
         return np.asarray([posterior_beta_samples[i]*(baseline/control_beta_samples[i]) if posterior_beta_samples[i] <= control_beta_samples[i] else 1- ((1-baseline)/(1-control_beta_samples[i]))*(1-posterior_beta_samples[i]) for i, _ in enumerate(list(posterior_beta_samples))])
 
-def perform_score_shrinkage(each_guide: Guide, negative_control_guide_pop1_total_normalized_counts_reps: List[float], negative_control_guide_pop2_total_normalized_counts_reps, List[float], shrinkage_prior_strength: List[float], prior_alpha: List[float], prior_beta: List[float], baseline_proportion: float,  monte_carlo_trials: int, random_seed: int, num_replicates: int) -> ShrinkageResult:
-    shrinkage_prior_alpha = shrinkage_prior_strength * prior_alpha
-    shrinkage_prior_beta = shrinkage_prior_strength * prior_beta
+def perform_score_shrinkage(each_guide: Guide, negative_control_guide_pop1_total_normalized_counts_reps: List[float], negative_control_guide_pop2_total_normalized_counts_reps: List[float], shrinkage_prior_strength: List[float], unweighted_prior_alpha: List[float], unweighted_prior_beta: List[float], baseline_proportion: float,  monte_carlo_trials: int, random_seed: int, num_replicates: int) -> ShrinkageResult:
+    shrinkage_prior_alpha = shrinkage_prior_strength * unweighted_prior_alpha
+    shrinkage_prior_beta = shrinkage_prior_strength * unweighted_prior_beta
 
     #
     # Monte-Carlo sampling of beta distributions (i.e. conjugate priors and posterior distributions)
@@ -116,46 +116,81 @@ def perform_score_shrinkage(each_guide: Guide, negative_control_guide_pop1_total
 def optimize_score_shrinkage_prior_strength():
     pass # TODO: Add here
 
+def perform_score_imputation(each_guide: Guide, all_guides: List[Guide], negative_control_guide_pop1_total_normalized_counts_reps: List[float], negative_control_guide_pop2_total_normalized_counts_reps: List[float], spatial_imputation_prior_strength_test: List[float], num_replicates: int) -> Tuple[List[float], List[float]]:
+    # Get Spatial Prior "Likelihood" Counts 
+
+
+    each_guide_pop1_spatial_contribution_reps: List[float] = np.repeat(0., num_replicates)
+    each_guide_pop2_spatial_contribution_reps: List[float] = np.repeat(0., num_replicates)
+    
+    # Iterate through all neighboring guides
+    for neighboring_guide in all_guides:
+        if (neighboring_guide.identifier != each_guide.identifier) and (neighboring_guide.position is not None):
+
+
+            neighboring_guide_spatial_contribution = StatisticalHelperMethods.gaussian_kernel(neighboring_guide.position, each_guide.position, spatial_bandwidth)
+
+            each_guide_pop1_spatial_contribution_reps = each_guide_pop1_spatial_contribution_reps + (neighboring_guide_spatial_contribution*neighboring_guide.pop1_normalized_count_reps)
+            each_guide_pop2_spatial_contribution_reps = each_guide_pop2_spatial_contribution_reps + (neighboring_guide_spatial_contribution*neighboring_guide.pop2_normalized_count_reps)
+
+    pop1_spatial_posterior_alpha = (spatial_imputation_prior_strength_test*negative_control_guide_pop1_total_normalized_counts_reps) + each_guide_pop1_spatial_contribution_reps
+    imputation_posterior_alpha = pop1_spatial_posterior_alpha
+
+    pop2_spatial_posterior_beta = (spatial_imputation_prior_strength_test*negative_control_guide_pop2_total_normalized_counts_reps) + each_guide_pop2_spatial_contribution_reps
+    imputation_posterior_beta = pop2_spatial_posterior_beta
+
+    return imputation_posterior_alpha, imputation_posterior_beta
+
+
+                
 
 def optimize_spatial_imputation_prior_strength(all_guides: List[Guide], negative_control_guide_pop1_total_normalized_counts_reps: List[float], negative_control_guide_pop2_total_normalized_counts_reps: List[float], num_replicates: int, spatial_bandwidth: float) -> List[float]:
+    #
+    #  Set paramaters for what prior weight to test
+    #
     max_spatial_imputation_prior_strength_tested = 100 # This should be passed as argument or determined automatically without input
     spatial_imputation_prior_tuning_attempts = 100 # This should be passed as argument or determined automatically based on max prior tested
-    spatial_imputation_prior_strength_test_list = np.linspace(0, max_spatial_imputation_prior_strength_tested, spatial_imputation_prior_tuning_attempts)
     
-    spatial_imputation_prior_strength: List[float] = []
-    for rep_i in range(num_replicates):
-        KL_guide_imputation_score_total_list : List[float] = []
-        for spatial_imputation_prior_strength_test in spatial_imputation_prior_strength_test_list:
-            KL_guide_imputation_score_total: float  = 0.
-            for each_guide in all_guides:
-                if each_guide.position is not None:
-                    each_guide_pop1_spatial_contribution: float = 0.
-                    each_guide_pop2_spatial_contribution: float = 0.
-                    for neighboring_guide in all_guides: 
-                        if (neighboring_guide.identifier != each_guide.identifier) and (neighboring_guide.position is not None):
-                            neighboring_guide_spatial_contribution = StatisticalHelperMethods.gaussian_kernel(neighboring_guide.position, each_guide.position, spatial_bandwidth)
+    # Get list of prior weight to test
+    spatial_imputation_prior_strength_test_list = np.linspace(0, max_spatial_imputation_prior_strength_tested, spatial_imputation_prior_tuning_attempts).repeat(num_replicates).reshape(spatial_imputation_prior_tuning_attempts, num_replicates)
+    
+    spatial_imputation_prior_strength_selected: List[float] = []
+    KL_guide_imputation_score_total_list : List[List[float]] = []
+    
+    # Iterate through each prior weight to test
+    for spatial_imputation_prior_strength_test in spatial_imputation_prior_strength_test_list:
 
-                            each_guide_pop1_spatial_contribution = each_guide_pop1_spatial_contribution + (neighboring_guide_spatial_contribution*neighboring_guide.pop1_normalized_count_reps[rep_i])
+        # Placeholder variable to hold total sum KL score for each replicate separately
+        KL_guide_imputation_score_total: List[float]  = np.repeat(0., num_replicates)
 
-                            each_guide_pop2_spatial_contribution = each_guide_pop2_spatial_contribution + (neighboring_guide_spatial_contribution*neighboring_guide.pop2_normalized_count_reps[rep_i])
+        # Iterate through each guide to test prior with tested weight
+        for each_guide in all_guides:
 
-                    pop1_spatial_posterior_alpha = (spatial_imputation_prior_strength_test*negative_control_guide_pop1_total_normalized_counts_reps[rep_i]) + each_guide_pop1_spatial_contribution
-                    
-                    pop2_spatial_posterior_beta = (spatial_imputation_prior_strength_test*negative_control_guide_pop2_total_normalized_counts_reps[rep_i]) + each_guide_pop2_spatial_contribution
+            # Ensure that the guide contains a position
+            if each_guide.position is not None:
 
-                    true_alpha = each_guide.pop1_normalized_count_reps[rep_i]
-                    true_beta = each_guide.pop2_normalized_count_reps[rep_i]
+                # Get the posterior
+                imputation_posterior_alpha, imputation_posterior_beta = perform_score_imputation(each_guide, all_guides, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, spatial_imputation_prior_strength_test, num_replicates)
 
-                    KL_guide_imputation_score = StatisticalHelperMethods.KL_beta(true_alpha, true_beta, pop1_spatial_posterior_alpha, pop2_spatial_posterior_beta)
-                    KL_guide_imputation_score_total = KL_guide_imputation_score_total + KL_guide_imputation_score 
-                    # TODO: I feel that this will implicitly place weight on null guides (since the majority will be null), so I wonder if there is a way to have the score prioritize guides that deviate from the null - think about how "deviation" from the null is defined quantitatively, and how this quantitation would be integrated into the heuristic.
-            KL_guide_imputation_score_total_list.append(KL_guide_imputation_score_total)
-        spatial_imputation_prior_strength_selected = spatial_imputation_prior_strength_test_list[np.argmin(KL_guide_imputation_score_total_list)]
-        spatial_imputation_prior_strength.append(spatial_imputation_prior_strength_selected)
-    spatial_imputation_prior_strength = np.asarray(spatial_imputation_prior_strength)
-    return spatial_imputation_prior_strength
+                true_alpha = each_guide.pop1_normalized_count_reps
+                true_beta = each_guide.pop2_normalized_count_reps
 
-def perform_shrinkage(
+                # Calculate KL divergence between the posterior and the likelihood
+                KL_guide_imputation_score: List[float] = StatisticalHelperMethods.KL_beta(true_alpha, true_beta, imputation_posterior_alpha, imputation_posterior_beta) 
+
+                # Add score to the main placeholder to get the final sum
+                KL_guide_imputation_score_total = KL_guide_imputation_score_total + KL_guide_imputation_score 
+                # TODO: I feel that this will implicitly place weight on null guides (since the majority will be null), so I wonder if there is a way to have the score prioritize guides that deviate from the null - think about how "deviation" from the null is defined quantitatively, and how this quantitation would be integrated into the heuristic.
+
+        KL_guide_imputation_score_total_list.append(KL_guide_imputation_score_total)
+    KL_guide_imputation_score_total_list = np.asarray(KL_guide_imputation_score_total_list)
+    spatial_imputation_prior_strength_selected = spatial_imputation_prior_strength_test_list[np.argmin(KL_guide_imputation_score_total_list, axis=0)]
+    return spatial_imputation_prior_strength_selected
+
+
+
+
+def perform_adjustment(
     negative_control_guides: List[Guide],
     positive_control_guides: List[Guide],
     observation_guides: List[Guide],
@@ -244,41 +279,128 @@ def perform_shrinkage(
     #
     # Identification of optimal shrinkage_prior_strength
     #
+    # TODO: I need to find a way to ensure that the fitted prior will work for guides that don't have position, i.e. I assume those without position will not have a prior based on the spatial information, but will the shrinkage weight of the imputation posterior be difference? 
     if shrinkage_prior_strength is None:
-        for each_guide in all_guides:
+        # NOTE: Here, we will be using selected guides for fit since the heteroscedasticity statistic may be biased towards positive effect guides.
 
-            # TODO: The code for calculating the posterior inputs for the spatial_imputation model could be modularized so that there are not any repetitive code
+        total_normalized_counts_per_guide_reps : List[List[float]] = [each_guide.pop1_normalized_count_reps + each_guide.pop2_normalized_count_reps for each_guide in guides_for_fit]
 
-            prior_alpha = negative_control_guide_pop1_total_normalized_counts_reps
-            prior_beta = negative_control_guide_pop2_total_normalized_counts_reps
-            # Perform shrinkage utilizing spatial information
-            if (each_guide.position != None) and enable_spatial_prior: # TODO: Consider the non enable_spatial_prior case. 
-                
-                # Get Spatial Prior "Likelihood" Counts 
-                each_guide_pop1_spatial_contribution_reps: List[int] = np.repeat(0., num_replicates)
-                each_guide_pop2_spatial_contribution_reps: List[int] = np.repeat(0., num_replicates)
-                for neighboring_guide in all_guides:
-                    if (neighboring_guide.identifier != each_guide.identifier) and (neighboring_guide.position is not None):
-                        neighboring_guide_spatial_contribution = StatisticalHelperMethods.gaussian_kernel(neighboring_guide.position, each_guide.position, spatial_bandwidth)
 
-                        each_guide_pop1_spatial_contribution_reps = each_guide_pop1_spatial_contribution_reps + (neighboring_guide_spatial_contribution*neighboring_guide.pop1_normalized_count_reps)
-                        each_guide_pop2_spatial_contribution_reps = each_guide_pop2_spatial_contribution_reps + (neighboring_guide_spatial_contribution*neighboring_guide.pop2_normalized_count_reps)
+        max_shrinkage_prior_strength_tested = 100 # This should be passed as argument or determined automatically without input
+        shrinkage_prior_tuning_attempts = 100 # This should be passed as argument or determined automatically based on max prior tested
+        
+        # Get list of prior weight to test
+        shrinkage_prior_strength_test_list = np.linspace(0, max_shrinkage_prior_strength_tested, shrinkage_prior_tuning_attempts).repeat(num_replicates).reshape(shrinkage_prior_tuning_attempts, num_replicates)
 
-                spatially_informed_posterior_samples_reps: Union[List[List[float]], None] = None 
-                
+        BP_statistic_reps_per_test: List[List[float]] = []
+        BP_pval_reps_per_test: List[List[float]] = []
+        for shrinkage_prior_strength_test in shrinkage_prior_strength_test_list:
 
-                pop1_spatial_posterior_alpha = (spatial_imputation_prior_strength_test*negative_control_guide_pop1_total_normalized_counts_reps) + each_guide_pop1_spatial_contribution
-                prior_alpha = pop1_spatial_posterior_alpha
+            # NOTE: The first list corresponds to each guide, the second list corresponds to number of replicates, the value is the mean LFC
+            guide_count_posterior_LFC_normalized_mean_list_per_guide = List[List[float]]
+            for each_guide in guides_for_fit:
 
-                pop2_spatial_posterior_beta = (spatial_imputation_prior_strength_test*negative_control_guide_pop2_total_normalized_counts_reps) + each_guide_pop2_spatial_contribution
-                prior_beta = pop2_spatial_posterior_beta
-                
+                # TODO: The code for calculating the posterior inputs for the spatial_imputation model could be modularized so that there are not any repetitive code
+
+                # By default, set the unweighted prior as the negative control normalized counts
+                unweighted_prior_alpha = negative_control_guide_pop1_total_normalized_counts_reps
+                unweighted_prior_beta = negative_control_guide_pop2_total_normalized_counts_reps
+
+                # If able to use spatial information, replace the unweighted priors with the spatial imputational posterior
+                if (each_guide.position != None) and enable_spatial_prior: 
+                    imputation_posterior_alpha, imputation_posterior_beta = perform_score_imputation(each_guide, all_guides, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, spatial_imputation_prior_strength, num_replicates)
+
+                    # Propogate the imputation posterior to the shrinkage prior
+                    unweighted_prior_alpha = imputation_posterior_alpha
+                    unweighted_prior_beta = imputation_posterior_beta
+
 
             
-            
+
+                shrinkage_result: ShrinkageResult = perform_score_shrinkage(each_guide, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, shrinkage_prior_strength_test, unweighted_prior_alpha, unweighted_prior_beta, baseline_proportion,  monte_carlo_trials, random_seed, num_replicates)
+
+
+                #shrinkage_result.guide_count_beta_samples_normalized_list
+                #shrinkage_result.guide_count_LFC_samples_normalized_list
+                #shrinkage_result.guide_count_posterior_beta_samples_normalized_list
+
+                # NOTE: List[List[float]], first list is each replicate, second list is the monte-carlo samples. We want the mean of the monte-carlo samples next
+                guide_count_posterior_LFC_samples_normalized_list: List[List[float]] = shrinkage_result.guide_count_posterior_LFC_samples_normalized_list 
+                
+                # This corresponds to the guide posterior mean LFC for each replicate separately for shrinkage prior weight optimization. After optimization of the shrinkage weight, the mean LFC of the averaged posterior of the replicates will be used.
+                guide_count_posterior_LFC_normalized_mean_list: List[float] = np.mean(guide_count_posterior_LFC_samples_normalized_list, axis=0) 
+                guide_count_posterior_LFC_normalized_mean_list_per_guide.append(guide_count_posterior_LFC_normalized_mean_list)
+
+
+            # NOTE: Instead of relying on numpy matrix operations to calculate heteroscedasticity, will just iterate through each replicate individually since it may be challenging to do otherwise. Could be a potential optimization in the future to use np matrix operations, but it may not be as readable anyways. (2/4/2023)
+
+            BP_statistic_reps: List[float] = []
+            BP_pval_reps: List[float] = []
+            for rep_i in range(num_replicates):
+                #
+                # Calculate the Breusch-Pagan statistic
+                #
+
+                # Prepare X - which is the normalized count, since the objective is to reduce hederoscedasticity across count
+                total_normalized_count_per_guide_X = [total_normalized_counts_reps[rep_i] for total_normalized_counts_reps in total_normalized_counts_per_guide_reps]
+
+                # Prepare Y - which is the LFC score, since we want to reduce heteroscedasticity of the LFC
+                LFC_posterior_mean_per_guide_Y = [guide_count_posterior_LFC_normalized_mean_list[rep_i] for guide_count_posterior_LFC_normalized_mean_list in guide_count_posterior_LFC_normalized_mean_list_per_guide]
+
+                # Regress Y over X - get the intercept and coefficient via OLS
+                beta_intercept_ols, beta_coefficient_ols = StatisticalHelperMethods.get_ols_estimators(total_normalized_count_per_guide_X, LFC_posterior_mean_per_guide_Y)
+
+                # Based on the regression estimates, calculate Y_hat
+                LFC_posterior_mean_per_guide_Y_hat = StatisticalHelperMethods.calculate_Y_hat(total_normalized_count_per_guide_X, beta_intercept_ols, beta_coefficient_ols)
+
+                # Calculate the squared residuals between Y_hat and Y
+                LFC_posterior_mean_per_guide_M_squared_residuals = StatisticalHelperMethods.calculate_squared_residuals(LFC_posterior_mean_per_guide_Y, LFC_posterior_mean_per_guide_Y_hat)
+
+                # Perform a second round of regression of the squared residuals over X.
+                beta_intercept_ols_squared_residuals, beta_coefficient_ols_squared_residuals = StatisticalHelperMethods.get_ols_estimators(total_normalized_count_per_guide_X, LFC_posterior_mean_per_guide_M_squared_residuals)
+
+                # Based on the residual regression estimates, calculate residual Y_hat
+                LFC_posterior_mean_per_guide_M_squared_residuals_Y_hat = StatisticalHelperMethods.calculate_Y_hat(total_normalized_count_per_guide_X, beta_intercept_ols_squared_residuals, beta_coefficient_ols_squared_residuals)
+
+                # Calculate the model fit R2 coefficient of determination from the residual regression model
+                LFC_posterior_mean_per_guide_M_squared_residuals_r_squared = StatisticalHelperMethods.calculate_r_squared(LFC_posterior_mean_per_guide_M_squared_residuals, LFC_posterior_mean_per_guide_M_squared_residuals_Y_hat)
+
+                # Calculate the final Breusch-Pagan chi-squared stastic: BP = n*R2
+                LFC_posterior_mean_per_guide_M_BP_statistic = len(total_normalized_count_per_guide_X) * LFC_posterior_mean_per_guide_M_squared_residuals_r_squared
+
+                LFC_posterior_mean_per_guide_M_BP_pval = 1-chi.cdf(LFC_posterior_mean_per_guide_M_BP_statistic, 1) # TODO: Double check if the degree of freedom is correct
+
+                BP_statistic_reps.append(LFC_posterior_mean_per_guide_M_BP_statistic)
+                BP_pval_reps.append(LFC_posterior_mean_per_guide_M_BP_pval)
+            BP_statistic_reps = np.asarray(BP_statistic_reps)
+            BP_pval_reps = np.asarray(BP_pval_reps)
+
+            BP_statistic_reps_per_test.append(BP_statistic_reps)
+            BP_pval_reps_per_test.append(BP_pval_reps)
+        BP_statistic_reps_per_test = np.asarray(BP_statistic_reps_per_test)
+        BP_pval_reps_per_test = np.asarray(BP_pval_reps_per_test)
+
+
+        shrinkage_prior_strength_selected : List[float] = shrinkage_prior_strength_test_list[np.argmin(BP_statistic_reps_per_test, axis=0)]
+
+        # return shrinkage_prior_strength_selected
+
+        # LEFTOFF: Just finished draft of selecting shrinkage prior weight. Next, move to function and proceed with calling the selection to run final model to get final posterior, then get the averaged posterior, calculating the MAP (or mean), and return. id probably say the mean is best if there is equal trust in all replicates, if there is not, then mode since any outlier density in the averaged posterior (due to the outlier replicate) will not influence the mode as much. It could be a nice quality control metric to show the concordance of each replicates posterior distribution.
 
 
 
 
-        # Perform final fit
+
+
+
+
+
+
+
+
+
+
+
+
+
 
