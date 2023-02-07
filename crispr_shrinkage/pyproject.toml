@@ -1,8 +1,8 @@
 [tool.poetry]
-name = "crispr-shrinkage"
+name = "crispr_shrinkage"
 version = "0.1.0"
 description = ""
-authors = ["Basheer Becerra <bbecerr@outlook.com>"]
+authors = ["Basheer Becerra <bbecerra@fas.harvard.edu>"]
 readme = "README.md"
 packages = [{include = "crispr_shrinkage"}]
 
@@ -10,8 +10,13 @@ packages = [{include = "crispr_shrinkage"}]
 python = ">=3.8,<3.12"
 numpy = "^1.24.1"
 scipy = "^1.10.0"
+matplotlib = "^3.6.3"
 
+
+[tool.poetry.group.dev.dependencies]
+jupyter = "^1.0.0"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
