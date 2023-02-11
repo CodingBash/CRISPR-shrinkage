@@ -251,10 +251,20 @@ def optimize_spatial_imputation_prior_strength(experiment_guide_sets: Experiment
         res = scipy.optimize.differential_evolution(optimize_imputation_model_weights_p, bounds=[(0.000001, 10),(0.000001, 10)], callback=store_values) # TODO: Set bounds as just positive - ask chatgpt how...
         
 
-        
-        plt.scatter([param[0] for param in param_vals], [param[1] for param in param_vals], c=loss_vals)
-        plt.plot([param[0] for param in param_vals], [param[1] for param in param_vals], color="black")
-        plt.colorbar()
+        X=[param[0] for param in param_vals]
+        Y=[param[1] for param in param_vals]
+        plt.scatter(X,Y , c=loss_vals)
+        #plt.plot([param[0] for param in param_vals], [param[1] for param in param_vals], color="black")
+        for i in range(len(X) - 1):
+            x1, y1 = X[i], Y[i]
+            x2, y2 = X[i + 1], Y[i + 1]
+            plt.annotate("", xy=(x2, y2), xycoords='data', xytext=(x1, y1), textcoords='data',
+                        arrowprops=dict(arrowstyle="->"))
+                        
+        plt.xlabel("Prior Strength")
+        plt.ylabel("Likelihood Strength")
+        plt.title("Rep: {}".format(rep_i))
+        plt.colorbar(label="loss")
         plt.show()
         if res.success is True:
             spatial_imputation_prior_strength, spatial_imputation_likelihood_strength = res.x
@@ -338,14 +348,13 @@ def optimize_score_shrinkage_prior_strength(guides_for_fit: List[Guide], experim
             unweighted_prior_beta: float = np.asarray([negative_control_guide_pop2_total_normalized_counts_reps[rep_i]])
 
             # If able to use spatial information, replace the unweighted priors with the spatial imputational posterior
-            if (each_guide.position != None) and enable_spatial_prior: 
-                spatial_imputation_prior_strength, spatial_imputation_likelihood_strength = spatial_imputation_model_weights
+            spatial_imputation_prior_strength, spatial_imputation_likelihood_strength = spatial_imputation_model_weights
 
-                imputation_posterior_alpha, imputation_posterior_beta = perform_score_imputation(each_guide, experiment_guide_sets, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, spatial_imputation_prior_strength, spatial_imputation_likelihood_strength, [rep_i], spatial_bandwidth)
+            imputation_posterior_alpha, imputation_posterior_beta = perform_score_imputation(each_guide, experiment_guide_sets, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, spatial_imputation_prior_strength, spatial_imputation_likelihood_strength, [rep_i], spatial_bandwidth)
 
-                # Propogate the imputation posterior to the shrinkage prior
-                unweighted_prior_alpha = imputation_posterior_alpha
-                unweighted_prior_beta = imputation_posterior_beta
+            # Propogate the imputation posterior to the shrinkage prior
+            unweighted_prior_alpha = imputation_posterior_alpha
+            unweighted_prior_beta = imputation_posterior_beta
 
             shrinkage_result: ShrinkageResult = perform_score_shrinkage(each_guide, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, shrinkage_prior_strength_test, unweighted_prior_alpha, unweighted_prior_beta, baseline_proportion, monte_carlo_trials, random_seed, [rep_i])
 
@@ -397,9 +406,6 @@ def optimize_score_shrinkage_prior_strength(guides_for_fit: List[Guide], experim
         
         LFC_posterior_mean_per_guide_M_BP_pval = 1-chi.cdf(LFC_posterior_mean_per_guide_M_BP_statistic, 1) # TODO: Double check if the degree of freedom is correct
 
-        print(shrinkage_prior_strength_test)
-        print(LFC_posterior_mean_per_guide_M_BP_statistic)
-        print(" ")
         return LFC_posterior_mean_per_guide_M_BP_statistic
 
 
@@ -408,8 +414,23 @@ def optimize_score_shrinkage_prior_strength(guides_for_fit: List[Guide], experim
     for rep_i in replicate_indices:
         optimize_shrinkage_model_weights_p = functools.partial(optimize_shrinkage_model_weights, rep_i)
 
-        res = scipy.optimize.minimize(optimize_shrinkage_model_weights_p, [0.000001], bounds=[(0.000001, np.inf)], options={'disp': True} ) # TODO: Set bounds as just positive - ask chatgpt how...
+        param_vals=[]
+        loss_vals=[]
+        def store_values(x, *args):
+            f = optimize_shrinkage_model_weights_p(x)
+            print("X: {}, f: {}".format(x, f))
+            param_vals.append(x)
+            loss_vals.append(f)
+
+
+        res = scipy.optimize.minimize(optimize_shrinkage_model_weights_p, [1], bounds=[(0.000001, 500)], method="L-BFGS-B", callback=store_values, options={"factr": 1e3}) # TODO: Set bounds as just positive - ask chatgpt how...
         
+        plt.scatter([param[0] for param in param_vals], loss_vals)
+        plt.xlabel("Prior Strength")
+        plt.ylabel("Loss")
+        plt.title("Rep: {}".format(rep_i))
+        plt.show()
+
         if res.success is True:
             shrinkage_prior_strength = res.x
             shrinkage_prior_strength_selected.append(shrinkage_prior_strength)
@@ -558,7 +579,7 @@ def perform_adjustment(
                 unweighted_prior_alpha = imputation_posterior_alpha
                 unweighted_prior_beta = imputation_posterior_beta
 
-
+            print("Shrinkage Prior: a={}, b={}".format(unweighted_prior_alpha,unweighted_prior_beta))
             shrinkage_result: ShrinkageResult = perform_score_shrinkage(each_guide, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, shrinkage_prior_strength, unweighted_prior_alpha, unweighted_prior_beta, baseline_proportion,  monte_carlo_trials, random_seed, replicate_indices)
 
 
@@ -581,8 +602,13 @@ def perform_adjustment(
         
         return guide_set
     
+    print("NEGATIVE_CONTROLS")
     negative_control_guides = inference_guide_set(negative_control_guides, experiment_guide_sets)
+
+    print("\nOBSERVATIONS")
     observation_guides = inference_guide_set(observation_guides, experiment_guide_sets)
+
+    print("\nPOSITIVES")
     positive_control_guides = inference_guide_set(positive_control_guides, experiment_guide_sets)
 
     return CrisprShrinkageResult(
@@ -624,8 +650,8 @@ if __name__ == "__main__":
     num_pos_guides = 50
 
     reps = 3
-    max_dup_factor = 20
-    max_guide_molecule_factor = 200
+    max_dup_factor = 30
+    max_guide_molecule_factor = 30
 
     pop1_dup_factor_list = np.asarray([np.round(uniform.rvs(1, max_dup_factor)) for _ in range(reps)])
     pop2_dup_factor_list = np.asarray([np.round(uniform.rvs(1, max_dup_factor)) for _ in range(reps)])
