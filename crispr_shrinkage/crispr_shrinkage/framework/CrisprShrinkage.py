@@ -161,9 +161,15 @@ def perform_score_imputation(each_guide: Guide, experiment_guide_sets: Experimen
                 each_guide_pop1_spatial_contribution_reps = each_guide_pop1_spatial_contribution_reps + (neighboring_guide_spatial_contribution*neighboring_guide.pop1_normalized_count_reps[replicate_indices])
                 each_guide_pop2_spatial_contribution_reps = each_guide_pop2_spatial_contribution_reps + (neighboring_guide_spatial_contribution*neighboring_guide.pop2_normalized_count_reps[replicate_indices])
 
+    print("Pop1 Imputation Prior Psuedocount: {}".format(spatial_imputation_prior_strength*negative_control_guide_pop1_total_normalized_counts_reps[replicate_indices]))
+    print("Pop1 Imputation Likelihood Psuedocount: {}".format(spatial_imputation_likelihood_strength * each_guide_pop1_spatial_contribution_reps))
+    
     pop1_spatial_posterior_alpha = (spatial_imputation_prior_strength*negative_control_guide_pop1_total_normalized_counts_reps[replicate_indices]) + (spatial_imputation_likelihood_strength * each_guide_pop1_spatial_contribution_reps)
     imputation_posterior_alpha = pop1_spatial_posterior_alpha
 
+    print("Pop2 Imputation Prior Psuedocount: {}".format(spatial_imputation_prior_strength*negative_control_guide_pop2_total_normalized_counts_reps[replicate_indices]))
+    print("Pop2 Imputation Likelihood Psuedocount: {}".format(spatial_imputation_likelihood_strength * each_guide_pop2_spatial_contribution_reps))
+    
     pop2_spatial_posterior_beta = (spatial_imputation_prior_strength*negative_control_guide_pop2_total_normalized_counts_reps[replicate_indices]) + (spatial_imputation_likelihood_strength * each_guide_pop2_spatial_contribution_reps)
     imputation_posterior_beta = pop2_spatial_posterior_beta
 
@@ -570,14 +576,13 @@ def perform_adjustment(
 
             # TODO IMPORTANT: For guides with no position, should still optimize
             # If able to use spatial information, replace the unweighted priors with the spatial imputational posterior
-            if (each_guide.position != None) and enable_spatial_prior: 
-                spatial_imputation_prior_strength, spatial_imputation_likelihood_strength = spatial_imputation_model_weights
+            spatial_imputation_prior_strength, spatial_imputation_likelihood_strength = spatial_imputation_model_weights
 
-                imputation_posterior_alpha, imputation_posterior_beta = perform_score_imputation(each_guide, experiment_guide_sets, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, spatial_imputation_prior_strength, spatial_imputation_likelihood_strength, replicate_indices, spatial_bandwidth)
+            imputation_posterior_alpha, imputation_posterior_beta = perform_score_imputation(each_guide, experiment_guide_sets, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, spatial_imputation_prior_strength, spatial_imputation_likelihood_strength, replicate_indices, spatial_bandwidth)
 
-                # Propogate the imputation posterior to the shrinkage prior
-                unweighted_prior_alpha = imputation_posterior_alpha
-                unweighted_prior_beta = imputation_posterior_beta
+            # Propogate the imputation posterior to the shrinkage prior
+            unweighted_prior_alpha = imputation_posterior_alpha
+            unweighted_prior_beta = imputation_posterior_beta
 
             print("Shrinkage Prior: a={}, b={}".format(unweighted_prior_alpha,unweighted_prior_beta))
             shrinkage_result: ShrinkageResult = perform_score_shrinkage(each_guide, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, shrinkage_prior_strength, unweighted_prior_alpha, unweighted_prior_beta, baseline_proportion,  monte_carlo_trials, random_seed, replicate_indices)
