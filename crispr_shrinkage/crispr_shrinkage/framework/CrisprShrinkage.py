@@ -301,120 +301,129 @@ def optimize_singleton_imputation_prior_strength(
 
 
 
+def perform_score_imputation(each_guide: Guide, experiment_guide_sets: ExperimentGuideSets, negative_control_guide_pop1_total_normalized_counts_reps: List[float], negative_control_guide_pop2_total_normalized_counts_reps: List[float], spatial_imputation_prior_strength: List[float], spatial_imputation_likelihood_strength: List[float], replicate_indices: List[int], spatial_bandwidth: float) -> Tuple[List[float], List[float]]:
+    # Get Spatial Prior "Likelihood" Counts 
+    each_guide_pop1_spatial_contribution_reps: List[float] = np.repeat(0., len(replicate_indices))
+    each_guide_pop2_spatial_contribution_reps: List[float] = np.repeat(0., len(replicate_indices))
+    
+    # Iterate through all neighboring guides
+    if each_guide.position is not None:
+        for neighboring_guide in np.concatenate([experiment_guide_sets.negative_control_guides, experiment_guide_sets.positive_control_guides, experiment_guide_sets.observation_guides]):
+            if (neighboring_guide.identifier != each_guide.identifier) and (neighboring_guide.position is not None):
 
-def optimize_neighborhood_imputation_prior_strength(
-    experiment_guide_sets: ExperimentGuideSets, 
-    negative_control_guide_pop1_total_normalized_counts_reps: List[float], negative_control_guide_pop2_total_normalized_counts_reps: List[float], 
-    replicate_indices: List[int], 
-    spatial_bandwidth: float, 
-    deviation_weights: List[float], 
-    KL_score_weights: List[float]) -> Tuple[List[float], List[float]]:
+                # Along with the weight, is the spatial bandwidth also something that we should optimize as well?
+                neighboring_guide_spatial_contribution = StatisticalHelperMethods.gaussian_kernel(neighboring_guide.position, each_guide.position, spatial_bandwidth)
 
-    neighboring_guides = np.concatenate([experiment_guide_sets.negative_control_guides, experiment_guide_sets.positive_control_guides, experiment_guide_sets.observation_guides])
 
-    def retrieve_objective_of_guide_set(rep_i, guide_set: List[Guide], params):
-        spatial_imputation_prior_strength_test, spatial_imputation_likelihood_strength_test = params
+                each_guide_pop1_spatial_contribution_reps = each_guide_pop1_spatial_contribution_reps + (neighboring_guide_spatial_contribution*neighboring_guide.pop1_normalized_count_reps[replicate_indices])
+                each_guide_pop2_spatial_contribution_reps = each_guide_pop2_spatial_contribution_reps + (neighboring_guide_spatial_contribution*neighboring_guide.pop2_normalized_count_reps[replicate_indices])
 
-        KL_guide_imputation_score_total: float = 0
-        for each_guide in guide_set:
-            # Ensure that the guide contains a position
+    
+    pop1_spatial_posterior_alpha = (spatial_imputation_prior_strength*negative_control_guide_pop1_total_normalized_counts_reps[replicate_indices]) + (spatial_imputation_likelihood_strength * each_guide_pop1_spatial_contribution_reps)
+    imputation_posterior_alpha = pop1_spatial_posterior_alpha
 
-            # Get the posterior
-            imputation_posterior_alpha, imputation_posterior_beta, each_guide_pop1_spatial_contribution_reps, each_guide_pop2_spatial_contribution_reps = perform_neighboorhood_score_imputation(each_guide, neighboring_guides, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, spatial_imputation_prior_strength_test, spatial_imputation_likelihood_strength_test, [rep_i], spatial_bandwidth)
+    
+    pop2_spatial_posterior_beta = (spatial_imputation_prior_strength*negative_control_guide_pop2_total_normalized_counts_reps[replicate_indices]) + (spatial_imputation_likelihood_strength * each_guide_pop2_spatial_contribution_reps)
+    imputation_posterior_beta = pop2_spatial_posterior_beta
 
-            imputation_posterior_alpha = imputation_posterior_alpha[0]
-            imputation_posterior_beta = imputation_posterior_beta[0]
+    return imputation_posterior_alpha, imputation_posterior_beta
 
-            true_alpha = each_guide.pop1_normalized_count_reps[rep_i]
-            true_beta = each_guide.pop2_normalized_count_reps[rep_i]
 
-            # Calculate KL divergence between the posterior and the likelihood
-            KL_guide_imputation_score: float = StatisticalHelperMethods.KL_beta(true_alpha, true_beta, imputation_posterior_alpha, imputation_posterior_beta)
+def optimize_spatial_imputation_prior_strength(experiment_guide_sets: ExperimentGuideSets, negative_control_guide_pop1_total_normalized_counts_reps: List[float], negative_control_guide_pop2_total_normalized_counts_reps: List[float], replicate_indices: List[int], spatial_bandwidth: float) -> Tuple[List[float], List[float]]:
 
-            # Add weight towards guides that deviate from the negative control.
-            KL_negative_control_deviation = 0
-            if each_guide.position is not None:
-                KL_negative_control_deviation: float = StatisticalHelperMethods.KL_beta(negative_control_guide_pop1_total_normalized_counts_reps[rep_i], negative_control_guide_pop2_total_normalized_counts_reps[rep_i], each_guide_pop1_spatial_contribution_reps[0], each_guide_pop2_spatial_contribution_reps[0])
+    # Get list of prior weight to test
+    spatial_imputation_prior_strength_selected: List[float] = []
 
-                KL_guide_imputation_score = (1+(deviation_weights[rep_i]*KL_negative_control_deviation))*KL_guide_imputation_score
+    def optimize_imputation_model_weights(rep_i, params):
+        spatial_imputation_prior_strength_test,spatial_imputation_likelihood_strength_test = params
 
-            # Add score to the main placeholder to get the final sum
-            KL_guide_imputation_score_total = KL_guide_imputation_score_total + KL_guide_imputation_score 
+        # Placeholder variable to hold total sum KL score for each replicate separately
+        KL_guide_imputation_score_total_positive: float = 0
+        KL_guide_imputation_score_total_negative: float = 0
+        KL_guide_imputation_score_total_observation: float = 0
+        
+        # Iterate through each guide to test prior with tested weight
+        def retrieve_objective_of_guide_set(guide_set: List[Guide]):
+            KL_guide_imputation_score_total: float = 0
+
+            for each_guide in guide_set:
+
+                # Ensure that the guide contains a position
+
+                # Get the posterior
+
+
+                imputation_posterior_alpha, imputation_posterior_beta = perform_score_imputation(each_guide, experiment_guide_sets, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, spatial_imputation_prior_strength_test, spatial_imputation_likelihood_strength_test, [rep_i], spatial_bandwidth)
+
+                imputation_posterior_alpha = imputation_posterior_alpha[0]
+                imputation_posterior_beta = imputation_posterior_beta[0]
+
+                true_alpha = each_guide.pop1_normalized_count_reps[rep_i]
+                true_beta = each_guide.pop2_normalized_count_reps[rep_i]
+
+                # Calculate KL divergence between the posterior and the likelihood
+                KL_guide_imputation_score: float = StatisticalHelperMethods.KL_beta(true_alpha, true_beta, imputation_posterior_alpha, imputation_posterior_beta)
+
+
+                # Add score to the main placeholder to get the final sum
+                KL_guide_imputation_score_total = KL_guide_imputation_score_total + KL_guide_imputation_score 
+                
+                return KL_guide_imputation_score_total, len(guide_set)
             
-        return KL_guide_imputation_score_total, len(guide_set)
+            # TODO: I feel that this will implicitly place weight on null guides (since the majority will be null), so I wonder if there is a way to have the score prioritize guides that deviate from the null - think about how "deviation" from the null is defined quantitatively, and how this quantitation would be integrated into the heuristic. (i.e. (1+coef*KL(nc_beta, guide_i_beta)*KL(guide_i_beta, posterior_beta))) Instead of KL(nc_beta, guide_i_beta), could also just use P(guide_i_beta_normalized=baseline_proportion)?? I believe that should be equivalent to P(guide_i_beta=E[nc_beta]), though by using KL we are considering the variance of the nc_beta.
 
-    def optimize_neighboorhood_imputation_model_weights(rep_i, params):
-        
-         # Iterate through each guide to test prior with tested weight
+        KL_guide_imputation_score_total_negative, negative_n = retrieve_objective_of_guide_set(experiment_guide_sets.negative_control_guides)
+        KL_guide_imputation_score_total_positive, positive_n = retrieve_objective_of_guide_set(experiment_guide_sets.positive_control_guides)
+        KL_guide_imputation_score_total_observation, observation_n = retrieve_objective_of_guide_set(experiment_guide_sets.observation_guides)
 
-        KL_guide_imputation_score_total_negative, negative_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.negative_control_guides, params)
-
-        KL_guide_imputation_score_total_positive, positive_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.positive_control_guides, params)
-        
-        KL_guide_imputation_score_total_observation, observation_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.observation_guides, params)
-        
         KL_guide_imputation_score_total_combined_avg = (KL_guide_imputation_score_total_negative+KL_guide_imputation_score_total_positive+KL_guide_imputation_score_total_observation)/(negative_n+positive_n+observation_n)
-        
-        KL_guide_imputation_score_total_negative_avg = np.inf if negative_n == 0 else KL_guide_imputation_score_total_negative/negative_n
-        KL_guide_imputation_score_total_positive_avg = np.inf if positive_n == 0 else KL_guide_imputation_score_total_positive/positive_n
-        KL_guide_imputation_score_total_observation_avg = np.inf if observation_n == 0 else KL_guide_imputation_score_total_observation/observation_n
-
-        print(KL_guide_imputation_score_total_combined_avg)
-        return KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg
-
-
-    def optimize_neighboorhood_imputation_model_weights_wrapper(rep_i, guide_set_weights: Union[List[float], None], params):
-        KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = optimize_neighboorhood_imputation_model_weights(rep_i, params)
 
         return KL_guide_imputation_score_total_combined_avg
 
 
-
-
     spatial_imputation_prior_strength_selected: List[float] = []
     spatial_imputation_likelihood_strength_selected: List[float] = []
-
     for rep_i in replicate_indices:
-        optimize_neighboorhood_imputation_model_weights_wrapper_p = functools.partial(optimize_neighboorhood_imputation_model_weights_wrapper, rep_i, KL_score_weights)
-
-
         param_vals=[]
         loss_vals=[]
         def store_values(x, convergence):
-            f = optimize_neighboorhood_imputation_model_weights_wrapper_p(x)
+            f = optimize_imputation_model_weights_p(x)
             print("X: {}, f: {}".format(x, f))
             param_vals.append(x)
             loss_vals.append(f)
-        
 
-        res = scipy.optimize.differential_evolution(optimize_neighboorhood_imputation_model_weights_wrapper_p, bounds=[(0.000001, 10),(0.000001, 10)], callback=store_values) # TODO: Set bounds as just positive - ask chatgpt how...
+
+        optimize_imputation_model_weights_p = functools.partial(optimize_imputation_model_weights, rep_i)
+        test = optimize_imputation_model_weights_p([1,1])
+        res = scipy.optimize.differential_evolution(optimize_imputation_model_weights_p, bounds=[(0.000001, 10),(0.000001, 10)]) # TODO: Set bounds as just positive - ask chatgpt how...
         
 
         X=[param[0] for param in param_vals]
         Y=[param[1] for param in param_vals]
-        plt.scatter(X,Y, c=loss_vals)
+        plt.scatter(X,Y , c=loss_vals)
+        #plt.plot([param[0] for param in param_vals], [param[1] for param in param_vals], color="black")
         for i in range(len(X) - 1):
             x1, y1 = X[i], Y[i]
             x2, y2 = X[i + 1], Y[i + 1]
             plt.annotate("", xy=(x2, y2), xycoords='data', xytext=(x1, y1), textcoords='data',
                         arrowprops=dict(arrowstyle="->"))
-
+                        
         plt.xlabel("Prior Strength")
         plt.ylabel("Likelihood Strength")
         plt.title("Rep: {}".format(rep_i))
         plt.colorbar(label="loss")
         plt.show()
-
-
         if res.success is True:
             spatial_imputation_prior_strength, spatial_imputation_likelihood_strength = res.x
             
-            KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = optimize_neighboorhood_imputation_model_weights(rep_i, res.x)
+            KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = optimize_imputation_model_weights(rep_i, res.x)
 
             print("KL Negative Set Average: {}".format(KL_guide_imputation_score_total_negative_avg))
             print("KL Positive Set Average: {}".format(KL_guide_imputation_score_total_positive_avg))
             print("KL Observation Set Average: {}".format(KL_guide_imputation_score_total_observation_avg))
             print("KL Combined Set Average: {}".format(KL_guide_imputation_score_total_combined_avg))
+
+
 
             spatial_imputation_prior_strength_selected.append(spatial_imputation_prior_strength)
             spatial_imputation_likelihood_strength_selected.append(spatial_imputation_likelihood_strength)
@@ -425,8 +434,6 @@ def optimize_neighborhood_imputation_prior_strength(
     spatial_imputation_likelihood_strength_selected = np.asarray(spatial_imputation_likelihood_strength_selected)
 
     return spatial_imputation_prior_strength_selected, spatial_imputation_likelihood_strength_selected
-
-
 
 
 def perform_score_shrinkage(each_guide: Guide, negative_control_guide_pop1_total_normalized_counts_reps: List[float], negative_control_guide_pop2_total_normalized_counts_reps: List[float], shrinkage_prior_strength: List[float], unweighted_prior_alpha: List[float], unweighted_prior_beta: List[float], baseline_proportion: float,  monte_carlo_trials: int, random_seed: int, replicate_indices: List[int]) -> ShrinkageResult:
@@ -743,8 +750,9 @@ def perform_adjustment(
 
         if neighborhood_imputation_model_weights is None:
             print("Optimizing neighborhood imputation weights")
-            neighborhood_imputation_model_weights = optimize_neighborhood_imputation_prior_strength(spatial_experiment_guide_sets, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, replicate_indices, spatial_bandwidth, deviation_weights, KL_score_weights)
+            neighborhood_imputation_model_weights = optimize_spatial_imputation_prior_strength(spatial_experiment_guide_sets, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, replicate_indices, spatial_bandwidth)
             print("Selected neighborhood imputation weights: {}".format(neighborhood_imputation_model_weights))
+        
         if singleton_imputation_model_weights is None:
             print("Optimizing singleton imputation weights")
             singleton_imputation_model_weights = optimize_singleton_imputation_prior_strength(
