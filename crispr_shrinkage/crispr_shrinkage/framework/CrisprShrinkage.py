@@ -12,7 +12,7 @@ import functools
 import copy
 import logging
 import sys
-
+from scipy.stats import percentileofscore
 
 class Guide:
     def __init__(self, identifier, position: Union[int, None], pop1_raw_count_reps: List[int], pop2_raw_count_reps: List[int]):
@@ -128,7 +128,15 @@ class StatisticalHelperMethods:
         # NOTE: Because the beta function can output extremely small values, using Decimal for higher precision
         return float(Decimal.ln(StatisticalHelperMethods.precise_beta(alpha_g, beta_g)/(StatisticalHelperMethods.precise_beta(alpha_f, beta_f)))) + ((alpha_f - alpha_g)*(sc.digamma(alpha_f) - sc.digamma(alpha_f+beta_f))) + ((beta_f - beta_g)*(sc.digamma(beta_f) - sc.digamma(alpha_f+beta_f)))
 
+    @staticmethod
+    def calculate_credible_interval(posterior_monte_carlo_samples: List[float], percentiles: Tuple[float, float] = (0.05, 0.95)) -> Tuple[float,float]:
+        # TODO: Move this validation to the main function, to avoid validating on every call but instead just once
+        assert percentiles[0] >= 0 and percentiles[0] <= 1, "First provided percentile must be within 0 and 1 inclusive, instead it is {}".format(percentiles[0])
+        assert percentiles[1] >= 0 and percentiles[1] <= 1, "Second provided percentile must be within 0 and 1 inclusive, instead it is {}".format(percentiles[1])
 
+        credible_interval = (np.percentile(posterior_monte_carlo_samples, percentiles[0]*100), np.percentile(posterior_monte_carlo_samples, percentiles[1]*100))
+
+        return credible_interval
     
     # Deprecated - this causes a non-differential point at the baseline due to the piecewise transformation... 
     @staticmethod
@@ -545,7 +553,7 @@ def optimize_shrinkage_prior_strength(spatial_experiment_guide_sets: Union[Exper
             # If able to use spatial information, replace the unweighted priors with the spatial imputational posterior
             spatial_imputation_prior_strength, spatial_imputation_likelihood_strength = neighborhood_imputation_model_weights
 
-            imputation_posterior_alpha, imputation_posterior_beta, _, _ = perform_neighboorhood_score_imputation(each_guide, experiment_guide_sets, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, spatial_imputation_prior_strength, spatial_imputation_likelihood_strength, [rep_i], spatial_bandwidth)
+            imputation_posterior_alpha, imputation_posterior_beta, _, _ = perform_neighboorhood_score_imputation(each_guide, spatial_experiment_guide_sets, negative_control_guide_pop1_total_normalized_counts_reps, negative_control_guide_pop2_total_normalized_counts_reps, spatial_imputation_prior_strength, spatial_imputation_likelihood_strength, [rep_i], spatial_bandwidth)
 
             # Propogate the imputation posterior to the shrinkage prior
             unweighted_prior_alpha = imputation_posterior_alpha
@@ -648,8 +656,8 @@ def perform_adjustment(
     num_replicates: int,
     include_observational_guides_in_fit: bool = True,
     include_positive_control_guides_in_fit: bool = False,
-    pop1_amplification_factors: List[float] = None,
-    pop2_amplification_factors: List[float] = None,
+    pop1_amplification_factors: List[float] = None, # TODO: could I use a combination of the original gDNA amount for library prep and the plasmid counts (or presort), to determine the scaling factors?
+    pop2_amplification_factors: List[float] = None, # TODO: Also, rename from amplification_factors to scaling factors.
     monte_carlo_trials: int = 1000,
     enable_spatial_prior: bool = False,
     spatial_bandwidth: int = 1,
@@ -662,7 +670,7 @@ def perform_adjustment(
     posterior_estimator: str = "mean",
     random_seed: Union[int, None] = None
     ):
-
+    print("Last updated: 2/19/2023 - 5:09pm")
     raw_negative_control_guides = copy.deepcopy(negative_control_guides)
     raw_positive_control_guides = copy.deepcopy(positive_control_guides)
     raw_observation_guides = copy.deepcopy(observation_guides)
@@ -819,8 +827,22 @@ def perform_adjustment(
                     LFC_estimate_combined = StatisticalHelperMethods.calculate_map(guide_count_posterior_LFC_samples_normalized_average)
                     LFC_estimate_per_replicate =  np.asarray([StatisticalHelperMethods.calculate_map(guide_count_posterior_LFC_samples_normalized) for guide_count_posterior_LFC_samples_normalized in guide_count_posterior_LFC_samples_normalized_list])
 
+                LFC_estimate_combined_CI = StatisticalHelperMethods.calculate_credible_interval(guide_count_posterior_LFC_samples_normalized_average)
+                LFC_estimate_combined_std = np.std(guide_count_posterior_LFC_samples_normalized_average)
+
+                LFC_estimate_per_replicate_CI = np.asarray([StatisticalHelperMethods.calculate_credible_interval(guide_count_posterior_LFC_samples_normalized_rep) for guide_count_posterior_LFC_samples_normalized_rep in guide_count_posterior_LFC_samples_normalized_list])
+                LFC_estimate_per_replicate_std = np.asarray([np.std(guide_count_posterior_LFC_samples_normalized_rep) for guide_count_posterior_LFC_samples_normalized_rep in guide_count_posterior_LFC_samples_normalized_list])
+
+
+
                 each_guide.LFC_estimate_combined = LFC_estimate_combined
                 each_guide.LFC_estimate_per_replicate = LFC_estimate_per_replicate
+
+                each_guide.LFC_estimate_combined_CI = LFC_estimate_combined_CI
+                each_guide.LFC_estimate_combined_std = LFC_estimate_combined_std
+
+                each_guide.LFC_estimate_per_replicate_CI = LFC_estimate_per_replicate_CI 
+                each_guide.LFC_estimate_per_replicate_std = LFC_estimate_per_replicate_std
             
             return guide_set
 
@@ -960,8 +982,24 @@ def perform_adjustment(
                     LFC_estimate_combined = StatisticalHelperMethods.calculate_map(guide_count_posterior_LFC_samples_normalized_average)
                     LFC_estimate_per_replicate =  np.asarray([StatisticalHelperMethods.calculate_map(guide_count_posterior_LFC_samples_normalized) for guide_count_posterior_LFC_samples_normalized in guide_count_posterior_LFC_samples_normalized_list])
 
+                LFC_estimate_combined_CI = StatisticalHelperMethods.calculate_credible_interval(guide_count_posterior_LFC_samples_normalized_average)
+                LFC_estimate_combined_std = np.std(guide_count_posterior_LFC_samples_normalized_average)
+
+                LFC_estimate_per_replicate_CI = np.asarray([StatisticalHelperMethods.calculate_credible_interval(guide_count_posterior_LFC_samples_normalized_rep) for guide_count_posterior_LFC_samples_normalized_rep in guide_count_posterior_LFC_samples_normalized_list])
+                LFC_estimate_per_replicate_std = np.asarray([np.std(guide_count_posterior_LFC_samples_normalized_rep) for guide_count_posterior_LFC_samples_normalized_rep in guide_count_posterior_LFC_samples_normalized_list])
+
+
+
                 each_guide.LFC_estimate_combined = LFC_estimate_combined
                 each_guide.LFC_estimate_per_replicate = LFC_estimate_per_replicate
+
+                each_guide.LFC_estimate_combined_CI = LFC_estimate_combined_CI
+                each_guide.LFC_estimate_combined_std = LFC_estimate_combined_std
+
+                each_guide.LFC_estimate_per_replicate_CI = LFC_estimate_per_replicate_CI 
+                each_guide.LFC_estimate_per_replicate_std = LFC_estimate_per_replicate_std
+
+                # TODO: Add posterior_estimator type to the guide object
             
             return guide_set
         
@@ -996,6 +1034,8 @@ def perform_adjustment(
             posterior_estimator=posterior_estimator,
             random_seed=random_seed
         )
+
+# TODO: Add tests
 if __name__ == "__main__":
 
     from scipy.stats import binom
