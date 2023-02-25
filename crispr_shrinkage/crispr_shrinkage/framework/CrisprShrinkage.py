@@ -6,6 +6,7 @@ import numpy as np
 import scipy.stats
 import scipy.special as sc
 import scipy.optimize as so
+import decimal
 from decimal import *
 import math
 import functools
@@ -45,7 +46,6 @@ class CrisprShrinkageResult:
             monte_carlo_trials: int,
             enable_spatial_prior: bool,
             spatial_bandwidth: int,
-            baseline_proportion: float, # TODO: Perform validation between (0,1), also accept None value for perfrming no normalization (or have that be another argument)
             posterior_estimator: str,
             random_seed: Union[int, None]):
         self.adjusted_negative_control_guides=adjusted_negative_control_guides
@@ -120,12 +120,28 @@ class StatisticalHelperMethods:
     
     @staticmethod
     def precise_beta(a: float, b: float) -> Decimal:
-        return (StatisticalHelperMethods.precise_gamma(a)*StatisticalHelperMethods.precise_gamma(b))/(StatisticalHelperMethods.precise_gamma(a+b))
+        
+        precise_beta_function = lambda a,b: (StatisticalHelperMethods.precise_gamma(a)*StatisticalHelperMethods.precise_gamma(b))/(StatisticalHelperMethods.precise_gamma(a+b))
+        try:
+            print("Running precise beta: {}, {}".format(a,b))
+            return precise_beta_function(a,b)
+        except decimal.Overflow:
+            print("Decimal overflow thrown at precise beta function with B({},{})".format(a,b))
+
+            new_precision = decimal.getcontext().prec*2 if decimal.getcontext().prec * 2 > 1000 else 1000
+            print("Decimal overflow thrown - attempting calculatin with doubled the precision from {} to {}".format(decimal.getcontext().prec, decimal.getcontext().prec*2))
+            
+            with decimal.localcontext() as ctx:
+                ctx.prec = new_precision  # increase the precision
+                return precise_beta_function(a,b)
+
+
 
     # TODO: Change KL to be base e to be between 0 and 1.
     @staticmethod
     def KL_beta(alpha_f: float, beta_f: float, alpha_g: float, beta_g: float):
         # NOTE: Because the beta function can output extremely small values, using Decimal for higher precision
+
         return float(Decimal.ln(StatisticalHelperMethods.precise_beta(alpha_g, beta_g)/(StatisticalHelperMethods.precise_beta(alpha_f, beta_f)))) + ((alpha_f - alpha_g)*(sc.digamma(alpha_f) - sc.digamma(alpha_f+beta_f))) + ((beta_f - beta_g)*(sc.digamma(beta_f) - sc.digamma(alpha_f+beta_f)))
 
     @staticmethod
@@ -179,6 +195,7 @@ class StatisticalHelperMethods:
 
             return LFC_posterior_mean_per_guide_M_BP_statistic
 
+
 def determine_guide_fit(guide: Guide, contains_position: Union[bool, None]):
     if contains_position is None:
         return True
@@ -194,10 +211,23 @@ def perform_singleton_score_imputation(each_guide: Guide,
     singleton_imputation_prior_strength: List[float],
     replicate_indices: List[int]) -> Tuple[List[float], List[float]]:
     
-    imputation_posterior_alpha = (singleton_imputation_prior_strength*negative_control_guide_pop1_total_normalized_counts_reps[replicate_indices]) 
+    imputation_posterior_alpha = singleton_imputation_prior_strength*negative_control_guide_pop1_total_normalized_counts_reps[replicate_indices]
     
-    imputation_posterior_beta = (singleton_imputation_prior_strength*negative_control_guide_pop2_total_normalized_counts_reps[replicate_indices])
+    imputation_posterior_beta = singleton_imputation_prior_strength*negative_control_guide_pop2_total_normalized_counts_reps[replicate_indices]
 
+    imputation_posterior_alpha = imputation_posterior_alpha.astype(int)
+    imputation_posterior_beta = imputation_posterior_beta.astype(int)
+
+    max_imputation_posterior = 1000 # Setting this max, since calculating the KL divergence of a very high posterior value will result in a precision error
+    for rep_i in range(len(replicate_indices)):
+        if max(imputation_posterior_alpha[rep_i],imputation_posterior_beta[rep_i]) > max_imputation_posterior:
+            print("Downscaling posterior: {}, {}".format(imputation_posterior_alpha[rep_i],imputation_posterior_beta[rep_i]))
+            if imputation_posterior_alpha[rep_i] > imputation_posterior_beta[rep_i]:
+                downscale_factor = max_imputation_posterior/imputation_posterior_alpha[rep_i]
+            else:
+                downscale_factor = max_imputation_posterior/imputation_posterior_beta[rep_i]
+            imputation_posterior_alpha[rep_i] = imputation_posterior_alpha[rep_i] * downscale_factor
+            imputation_posterior_beta[rep_i] = imputation_posterior_beta[rep_i] * downscale_factor
     return imputation_posterior_alpha, imputation_posterior_beta
 
 def perform_neighboorhood_score_imputation(each_guide: Guide, 
@@ -259,6 +289,7 @@ def optimize_singleton_imputation_prior_strength(
             true_beta = each_guide.pop2_normalized_count_reps[rep_i]
 
             # Calculate KL divergence between the posterior and the likelihood
+            
             KL_guide_imputation_score: float = StatisticalHelperMethods.KL_beta(true_alpha, true_beta, imputation_posterior_alpha, imputation_posterior_beta)
 
             # Add score to the main placeholder to get the final sum
@@ -268,15 +299,16 @@ def optimize_singleton_imputation_prior_strength(
 
 
     def optimize_singleton_imputation_model_weights(rep_i, params):
-        KL_guide_imputation_score_total_negative, negative_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.negative_control_guides, params)
-        KL_guide_imputation_score_total_positive, positive_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.positive_control_guides, params)
-        KL_guide_imputation_score_total_observation, observation_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.observation_guides, params)
-
-        KL_guide_imputation_score_total_combined_avg = (KL_guide_imputation_score_total_negative+KL_guide_imputation_score_total_positive+KL_guide_imputation_score_total_observation)/(negative_n+positive_n+observation_n)
-            
-        KL_guide_imputation_score_total_negative_avg = np.inf if negative_n == 0 else KL_guide_imputation_score_total_negative/negative_n
-        KL_guide_imputation_score_total_positive_avg = np.inf if positive_n == 0 else KL_guide_imputation_score_total_positive/positive_n
-        KL_guide_imputation_score_total_observation_avg = np.inf if observation_n == 0 else KL_guide_imputation_score_total_observation/observation_n
+        KL_guide_imputation_score_total_negative, negative_total_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.negative_control_guides, params)
+        KL_guide_imputation_score_total_positive,  positive_total_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.positive_control_guides, params)
+        KL_guide_imputation_score_total_observation,  observation_total_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.observation_guides, params)
+        
+        total_n = (negative_total_n+positive_total_n+observation_total_n)
+        KL_guide_imputation_score_total_combined_avg = np.inf if total_n == 0 else (KL_guide_imputation_score_total_negative + KL_guide_imputation_score_total_positive + KL_guide_imputation_score_total_observation) / total_n
+        
+        KL_guide_imputation_score_total_negative_avg = np.inf if negative_total_n == 0 else KL_guide_imputation_score_total_negative/negative_total_n
+        KL_guide_imputation_score_total_positive_avg = np.inf if positive_total_n == 0 else KL_guide_imputation_score_total_positive/positive_total_n
+        KL_guide_imputation_score_total_observation_avg = np.inf if observation_total_n == 0 else KL_guide_imputation_score_total_observation/observation_total_n
 
 
         return KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg
@@ -345,16 +377,19 @@ def optimize_neighborhood_imputation_prior_strength(
     replicate_indices: List[int], 
     spatial_bandwidth: float, 
     deviation_weights: List[float], 
-    KL_score_weights: List[float]) -> Tuple[List[float], List[float]]:
-
+    KL_score_weights: List[float],
+    neighborhood_optimization_guide_sample_size: int = 50) -> Tuple[List[float], List[float]]:
 
     def retrieve_objective_of_guide_set(rep_i, guide_set: List[Guide], params):
         spatial_imputation_prior_strength_test, spatial_imputation_likelihood_strength_test = params
         if len(guide_set) == 0:
-            return 0, 0
+            return 0,0,0
 
         KL_guide_imputation_score_total: float = 0
-        sampled_guide_set = random.sample(guide_set, 50)
+
+        neighborhood_optimization_guide_sample_size_i = len(guide_set) if neighborhood_optimization_guide_sample_size > len(guide_set) else neighborhood_optimization_guide_sample_size
+
+        sampled_guide_set = random.sample(guide_set, neighborhood_optimization_guide_sample_size_i)
         for each_guide in sampled_guide_set:
             # Ensure that the guide contains a position
 
@@ -380,23 +415,28 @@ def optimize_neighborhood_imputation_prior_strength(
             # Add score to the main placeholder to get the final sum
             KL_guide_imputation_score_total = KL_guide_imputation_score_total + KL_guide_imputation_score 
             
-        return KL_guide_imputation_score_total, len(guide_set)
+        return KL_guide_imputation_score_total, neighborhood_optimization_guide_sample_size_i, len(guide_set)
 
     def optimize_neighboorhood_imputation_model_weights(rep_i, params):
         
          # Iterate through each guide to test prior with tested weight
 
-        KL_guide_imputation_score_total_negative, negative_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.negative_control_guides, params)
+        KL_guide_imputation_score_total_negative, negative_sampled_n, negative_total_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.negative_control_guides, params)
 
-        KL_guide_imputation_score_total_positive, positive_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.positive_control_guides, params)
+        KL_guide_imputation_score_total_positive, positive_sampled_n, positive_total_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.positive_control_guides, params)
         
-        KL_guide_imputation_score_total_observation, observation_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.observation_guides, params)
+        KL_guide_imputation_score_total_observation, observation_sampled_n, observation_total_n = retrieve_objective_of_guide_set(rep_i, experiment_guide_sets.observation_guides, params)
         
-        KL_guide_imputation_score_total_combined_avg = (KL_guide_imputation_score_total_negative+KL_guide_imputation_score_total_positive+KL_guide_imputation_score_total_observation)/(negative_n+positive_n+observation_n)
+        total_n = (negative_total_n+positive_total_n+observation_total_n)
+        KL_guide_imputation_score_total_combined_avg = np.inf if total_n == 0 else (
+            (0 if negative_sampled_n == 0 else (KL_guide_imputation_score_total_negative/negative_sampled_n)*negative_total_n) + 
+            (0 if positive_sampled_n == 0 else (KL_guide_imputation_score_total_positive/positive_sampled_n)*positive_total_n) + 
+            (0 if observation_sampled_n == 0 else (KL_guide_imputation_score_total_observation/observation_sampled_n)*observation_total_n)
+            ) / total_n
         
-        KL_guide_imputation_score_total_negative_avg = np.inf if negative_n == 0 else KL_guide_imputation_score_total_negative/negative_n
-        KL_guide_imputation_score_total_positive_avg = np.inf if positive_n == 0 else KL_guide_imputation_score_total_positive/positive_n
-        KL_guide_imputation_score_total_observation_avg = np.inf if observation_n == 0 else KL_guide_imputation_score_total_observation/observation_n
+        KL_guide_imputation_score_total_negative_avg = np.inf if negative_sampled_n == 0 else KL_guide_imputation_score_total_negative/negative_sampled_n
+        KL_guide_imputation_score_total_positive_avg = np.inf if positive_sampled_n == 0 else KL_guide_imputation_score_total_positive/positive_sampled_n
+        KL_guide_imputation_score_total_observation_avg = np.inf if observation_sampled_n == 0 else KL_guide_imputation_score_total_observation/observation_sampled_n
 
         return KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg
 
@@ -1144,8 +1184,8 @@ if __name__ == "__main__":
         monte_carlo_trials = 1000,
         enable_spatial_prior =  True,
         spatial_bandwidth = 7,
-        neighborhood_imputation_model_weights= np.asarray([[0.00072893, 0.00047752, 0.00259672],[0.62589106, 0.21313737, 0.92475451]]),
-        singleton_imputation_model_weights = np.asarray([0.00142129, 0.00128178, 0.00137408]),
+        neighborhood_imputation_model_weights= None,
+        singleton_imputation_model_weights = None,
         baseline_proportion = 0.5, # TODO: Perform validation between (0,1), also accept None value for perfrming no normalization (or have that be another argument)
         deviation_weights = [1,1,1],
         KL_score_weights = None,
