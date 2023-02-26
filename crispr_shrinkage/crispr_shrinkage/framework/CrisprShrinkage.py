@@ -47,10 +47,13 @@ class CrisprShrinkageResult:
             enable_neighborhood_prior: bool,
             neighborhood_imputation_prior_strength: Union[List[float],None], 
             neighborhood_imputation_likelihood_strength: Union[List[float], None],
+            singleton_imputation_prior_strength: Union[List[float], None],
             sample_population_scaling_factors: List[float],
             control_population_scaling_factors: List[float],
             monte_carlo_trials: int,
             neighborhood_bandwidth: int,
+            deviation_weights: Union[List[float], None],
+            KL_guide_set_weights: Union[List[float], None],
             posterior_estimator: str,
             random_seed: Union[int, None]):
 
@@ -60,6 +63,7 @@ class CrisprShrinkageResult:
         self.shrinkage_prior_strength=shrinkage_prior_strength
         self.neighborhood_imputation_prior_strength=neighborhood_imputation_prior_strength
         self.neighborhood_imputation_likelihood_strength=neighborhood_imputation_likelihood_strength
+        self.singleton_imputation_prior_strength=singleton_imputation_prior_strength
         self.raw_negative_control_guides=raw_negative_control_guides
         self.raw_positive_control_guides=raw_positive_control_guides
         self.raw_observation_guides=raw_observation_guides
@@ -71,6 +75,8 @@ class CrisprShrinkageResult:
         self.monte_carlo_trials=monte_carlo_trials
         self.enable_neighborhood_prior=enable_neighborhood_prior
         self.neighborhood_bandwidth=neighborhood_bandwidth
+        self.deviation_weights=deviation_weights
+        self.KL_guide_set_weights=KL_guide_set_weights
         self.posterior_estimator=posterior_estimator
         self.random_seed=random_seed
 
@@ -129,7 +135,7 @@ class StatisticalHelperMethods:
         
         precise_beta_function = lambda a,b: (StatisticalHelperMethods.precise_gamma(a)*StatisticalHelperMethods.precise_gamma(b))/(StatisticalHelperMethods.precise_gamma(a+b))
         try:
-            print("Running precise beta: {}, {}".format(a,b))
+            #print("Running precise beta: {}, {}".format(a,b))
             return precise_beta_function(a,b)
         except decimal.Overflow:
             print("Decimal overflow thrown at precise beta function with B({},{})".format(a,b))
@@ -147,7 +153,7 @@ class StatisticalHelperMethods:
     @staticmethod
     def KL_beta(alpha_f: float, beta_f: float, alpha_g: float, beta_g: float):
         # NOTE: Because the beta function can output extremely small values, using Decimal for higher precision
-
+        
         return float(Decimal.ln(StatisticalHelperMethods.precise_beta(alpha_g, beta_g)/(StatisticalHelperMethods.precise_beta(alpha_f, beta_f)))) + ((alpha_f - alpha_g)*(sc.digamma(alpha_f) - sc.digamma(alpha_f+beta_f))) + ((beta_f - beta_g)*(sc.digamma(beta_f) - sc.digamma(alpha_f+beta_f)))
 
     @staticmethod
@@ -220,12 +226,13 @@ class ModelInference:
         singleton_imputation_prior_strength: List[float],
         replicate_indices: List[int]) -> Tuple[List[float], List[float]]:
         
-        imputation_posterior_alpha = singleton_imputation_prior_strength*negative_control_guide_pop1_total_normalized_counts_reps[replicate_indices]
-        imputation_posterior_beta = singleton_imputation_prior_strength*negative_control_guide_pop2_total_normalized_counts_reps[replicate_indices]
+        imputation_posterior_alpha = singleton_imputation_prior_strength*negative_control_guide_sample_population_total_normalized_counts_reps[replicate_indices]
+        imputation_posterior_beta = singleton_imputation_prior_strength*negative_control_guide_control_population_total_normalized_counts_reps[replicate_indices]
 
-        imputation_posterior_alpha = imputation_posterior_alpha.astype(int)
-        imputation_posterior_beta = imputation_posterior_beta.astype(int)
+        imputation_posterior_alpha = imputation_posterior_alpha.astype(float)
+        imputation_posterior_beta = imputation_posterior_beta.astype(float)
 
+        # TODO: This block may be able to be removed, since the upper bounds is set to ensure that the posterior does not get high during optimization
         max_imputation_posterior = 1000 # Setting this as max value, since calculating the KL divergence of a very high posterior value may result in a precision error
         for rep_i in range(len(replicate_indices)):
             if max(imputation_posterior_alpha[rep_i], imputation_posterior_beta[rep_i]) > max_imputation_posterior:
@@ -264,7 +271,7 @@ class ModelInference:
                     each_guide_sample_population_spatial_contribution_reps = each_guide_sample_population_spatial_contribution_reps + (neighboring_guide_spatial_contribution*neighboring_guide.sample_population_normalized_count_reps[replicate_indices])
                     each_guide_control_population_spatial_contribution_reps = each_guide_control_population_spatial_contribution_reps + (neighboring_guide_spatial_contribution*neighboring_guide.control_population_normalized_count_reps[replicate_indices])
 
-        sample_population_spatial_posterior_alpha = (spatial_imputation_prior_strength*negative_control_guide_sample_population_total_normalized_counts_reps[replicate_indices]) + (neighborhood_imputation_likelihood_strength * each_guide_sample_population_spatial_contribution_reps)
+        sample_population_spatial_posterior_alpha = (neighborhood_imputation_prior_strength*negative_control_guide_sample_population_total_normalized_counts_reps[replicate_indices]) + (neighborhood_imputation_likelihood_strength * each_guide_sample_population_spatial_contribution_reps)
         imputation_posterior_alpha = sample_population_spatial_posterior_alpha
 
         control_population_spatial_posterior_beta = (neighborhood_imputation_prior_strength*negative_control_guide_control_population_total_normalized_counts_reps[replicate_indices]) + (neighborhood_imputation_likelihood_strength * each_guide_control_population_spatial_contribution_reps)
@@ -352,6 +359,7 @@ class SingletonImputationOptimizer:
 
     @staticmethod
     def objective_function_of_all_guides(rep_i: int,
+                                        experiment_guide_sets: ExperimentGuideSets,
                                         negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
                                         negative_control_guide_control_population_total_normalized_counts_reps: List[float],
                                         params: float):
@@ -378,11 +386,12 @@ class SingletonImputationOptimizer:
         KL_guide_set_weights: Union[List[float], None]) -> Tuple[List[float], List[float]]:
 
         def weighted_objective_function_of_all_guides(rep_i: int,
+                                                        experiment_guide_sets: ExperimentGuideSets,
                                                         negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
                                                         negative_control_guide_control_population_total_normalized_counts_reps: List[float],
                                                         KL_guide_set_weights: Union[List[float], None],
                                                         params: float):
-            KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = SingletonImputationOptimizer.objective_function_of_all_guides(rep_i, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, params)
+            KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = SingletonImputationOptimizer.objective_function_of_all_guides(rep_i, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, params)
 
             if KL_guide_set_weights is None:
                 return KL_guide_imputation_score_total_combined_avg
@@ -395,7 +404,7 @@ class SingletonImputationOptimizer:
 
         singleton_imputation_prior_strength_selected: List[float] = []
         for rep_i in replicate_indices:
-            weighted_objective_function_of_all_guides_p = functools.partial(weighted_objective_function_of_all_guides, rep_i, KL_guide_set_weights)
+            weighted_objective_function_of_all_guides_p = functools.partial(weighted_objective_function_of_all_guides, rep_i, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, KL_guide_set_weights)
             
             param_vals=[]
             loss_vals=[]
@@ -407,7 +416,12 @@ class SingletonImputationOptimizer:
             
 
             # TODO: Set bounds as just positive - ask chatgpt how...
-            res = scipy.optimize.differential_evolution(weighted_objective_function_of_all_guides_p, bounds=[(0.000001, 10)], callback=store_values, maxiter= 10000) 
+            max_posterior_bounds_a = 100
+            max_posterior_bounds_b = 100
+            optimizer_bounds_a = max_posterior_bounds_a / negative_control_guide_sample_population_total_normalized_counts_reps[rep_i]
+            optimizer_bounds_b = max_posterior_bounds_b / negative_control_guide_control_population_total_normalized_counts_reps[rep_i]
+            optimizer_upper_bound = np.min([optimizer_bounds_a, optimizer_bounds_b])
+            res = scipy.optimize.differential_evolution(weighted_objective_function_of_all_guides_p, bounds=[(0.000001, optimizer_upper_bound)], callback=store_values, maxiter= 10000) 
 
             plt.scatter(param_vals, loss_vals)
             plt.xlabel("Prior Strength")
@@ -418,7 +432,7 @@ class SingletonImputationOptimizer:
             if res.success is True:
                 singleton_imputation_prior_strength = res.x
                 
-                KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = optimize_singleton_imputation_model_weights(rep_i, res.x)
+                KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = SingletonImputationOptimizer.objective_function_of_all_guides(rep_i, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, res.x)
 
                 print("KL Negative Set Average: {}".format(KL_guide_imputation_score_total_negative_avg))
                 print("KL Positive Set Average: {}".format(KL_guide_imputation_score_total_positive_avg))
@@ -435,8 +449,9 @@ class SingletonImputationOptimizer:
 
 class NeighborhoodImputationOptimizer:
     @staticmethod
-    def objective_function_of_each_guide_set(rep_i: int, 
-                                                guide_set: List[Guide], 
+    def objective_function_of_each_guide_set(rep_i: int,
+                                                guide_set: List[Guide],
+                                                neighborhood_optimization_guide_sample_size: int,
                                                 experiment_guide_sets: ExperimentGuideSets,
                                                 negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
                                                 negative_control_guide_control_population_total_normalized_counts_reps: List[float],
@@ -459,8 +474,8 @@ class NeighborhoodImputationOptimizer:
             imputation_posterior_alpha = imputation_posterior_alpha[0]
             imputation_posterior_beta = imputation_posterior_beta[0]
 
-            true_alpha = each_guide.pop1_normalized_count_reps[rep_i]
-            true_beta = each_guide.pop2_normalized_count_reps[rep_i]
+            true_alpha = each_guide.sample_population_normalized_count_reps[rep_i]
+            true_beta = each_guide.control_population_normalized_count_reps[rep_i]
 
             # Calculate KL divergence between the posterior and the likelihood
             KL_guide_imputation_score: float = StatisticalHelperMethods.KL_beta(true_alpha, true_beta, imputation_posterior_alpha, imputation_posterior_beta)
@@ -480,6 +495,7 @@ class NeighborhoodImputationOptimizer:
 
     @staticmethod
     def objective_function_of_all_guides(rep_i: int,
+                                        neighborhood_optimization_guide_sample_size: int,
                                         experiment_guide_sets: ExperimentGuideSets,
                                         negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
                                         negative_control_guide_control_population_total_normalized_counts_reps: List[float],
@@ -489,11 +505,11 @@ class NeighborhoodImputationOptimizer:
         
         # Iterate through each guide to test prior with tested weight
 
-        KL_guide_imputation_score_total_negative, negative_sampled_n, negative_total_n = NeighborhoodImputationOptimizer.objective_function_of_each_guide_set(rep_i, experiment_guide_sets.negative_control_guides, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
+        KL_guide_imputation_score_total_negative, negative_sampled_n, negative_total_n = NeighborhoodImputationOptimizer.objective_function_of_each_guide_set(rep_i, experiment_guide_sets.negative_control_guides, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
 
-        KL_guide_imputation_score_total_positive, positive_sampled_n, positive_total_n = NeighborhoodImputationOptimizer.objective_function_of_each_guide_set(rep_i, experiment_guide_sets.positive_control_guides, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
+        KL_guide_imputation_score_total_positive, positive_sampled_n, positive_total_n = NeighborhoodImputationOptimizer.objective_function_of_each_guide_set(rep_i, experiment_guide_sets.positive_control_guides, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
 
-        KL_guide_imputation_score_total_observation, observation_sampled_n, observation_total_n = NeighborhoodImputationOptimizer.objective_function_of_each_guide_set(rep_i, experiment_guide_sets.observation_guides, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
+        KL_guide_imputation_score_total_observation, observation_sampled_n, observation_total_n = NeighborhoodImputationOptimizer.objective_function_of_each_guide_set(rep_i, experiment_guide_sets.observation_guides, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
         
         total_n = (negative_total_n+positive_total_n+observation_total_n)
         
@@ -528,7 +544,7 @@ class NeighborhoodImputationOptimizer:
                                         deviation_weights: List[float],
                                         guide_set_weights: Union[List[float], None], 
                                         params: Tuple[float, float]):
-            KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = NeighborhoodImputationOptimizer.objective_function_of_all_guides(rep_i, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
+            KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = NeighborhoodImputationOptimizer.objective_function_of_all_guides(rep_i, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
             
             if KL_guide_set_weights is None:
                 return KL_guide_imputation_score_total_combined_avg
@@ -572,7 +588,7 @@ class NeighborhoodImputationOptimizer:
             if res.success is True:
                 neighborhood_imputation_prior_strength, neighborhood_imputation_likelihood_strength = res.x
                 
-                KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = NeighborhoodImputationOptimizer.objective_function_of_all_guides(rep_i, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, res.x)
+                KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = NeighborhoodImputationOptimizer.objective_function_of_all_guides(rep_i, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, res.x)
 
                 print("KL Negative Set Average: {}".format(KL_guide_imputation_score_total_negative_avg))
                 print("KL Positive Set Average: {}".format(KL_guide_imputation_score_total_positive_avg))
@@ -585,8 +601,8 @@ class NeighborhoodImputationOptimizer:
                 # TODO: Put a more detailed message on optimization failure, such as the message from the result object res.message
                 raise Exception("Neighborhood imputation optimization failure: {}".format(res.message)) 
 
-        neighborhood_imputation_prior_strength_selected = np.asarray(spatial_imputation_prior_strength_selected)
-        neighborhood_imputation_likelihood_strength_selected = np.asarray(spatial_imputation_likelihood_strength_selected)
+        neighborhood_imputation_prior_strength_selected = np.asarray(neighborhood_imputation_prior_strength_selected)
+        neighborhood_imputation_likelihood_strength_selected = np.asarray(neighborhood_imputation_likelihood_strength_selected)
 
         return neighborhood_imputation_prior_strength_selected, neighborhood_imputation_likelihood_strength_selected
 
@@ -600,8 +616,11 @@ class ShrinkageOptimizer:
                                             negative_control_guide_control_population_total_normalized_counts_reps: List[float],
                                             neighborhood_imputation_prior_strength: List[float],
                                             neighborhood_imputation_likelihood_strength: List[float],
+                                            singleton_imputation_prior_strength: List[float],
                                             neighborhood_bandwidth: float,
-                                            enable_neighborhood_prior: bool
+                                            enable_neighborhood_prior: bool,
+                                            monte_carlo_trials: int,
+                                            random_seed: Union[int, None],
                                             params: Tuple[float]):
         # TODO: There is a major inefficiency for this optimization function and the other optimization function, is that even though optimization is done for each rep_i, the posterior is calculated for all reps then indexed for the rep_i argument... I think being able to index the arguments to the perform_score_imputation should work if the typehint is correct. 
         shrinkage_prior_strength_test=params[0]
@@ -643,7 +662,7 @@ class ShrinkageOptimizer:
             imputation_posterior_alpha, imputation_posterior_beta = ModelInference.perform_singleton_score_imputation(each_guide, 
                     negative_control_guide_sample_population_total_normalized_counts_reps, 
                     negative_control_guide_control_population_total_normalized_counts_reps, 
-                    singleton_imputation_model_weights,
+                    singleton_imputation_prior_strength,
                     [rep_i])
 
 
@@ -686,7 +705,7 @@ class ShrinkageOptimizer:
         include_positive_control_guides_in_fit: bool,
         neighborhood_imputation_prior_strength: List[float],
         neighborhood_imputation_likelihood_strength: List[float],
-        singleton_imputation_model_weights: List[float],
+        singleton_imputation_prior_strength: List[float],
         neighborhood_bandwidth: float,
         monte_carlo_trials: int,
         random_seed: Union[int, None]) -> List[float]:
@@ -724,8 +743,11 @@ class ShrinkageOptimizer:
                                             negative_control_guide_control_population_total_normalized_counts_reps,
                                             neighborhood_imputation_prior_strength,
                                             neighborhood_imputation_likelihood_strength,
+                                            singleton_imputation_prior_strength,
                                             neighborhood_bandwidth,
-                                            enable_neighborhood_prior)
+                                            enable_neighborhood_prior,
+                                            monte_carlo_trials,
+                                            random_seed)
 
             param_vals=[]
             loss_vals=[]
@@ -769,7 +791,7 @@ def perform_adjustment(
     neighborhood_bandwidth: float = 1,
     neighborhood_imputation_prior_strength: Union[List[float], None] = None,
     neighborhood_imputation_likelihood_strength: Union[List[float], None] = None,
-    singleton_imputation_model_weights: Union[List[float], None] = None,
+    singleton_imputation_prior_strength: Union[List[float], None] = None,
     deviation_weights: Union[List[float], None] = None,
     KL_guide_set_weights: Union[List[float], None] = None, 
     shrinkage_prior_strength: Union[List[float], None] = None,
@@ -851,7 +873,7 @@ def perform_adjustment(
             negative_control_guide_control_population_total_normalized_counts_reps = negative_control_guide_control_population_total_normalized_counts_reps + negative_control_guide.control_population_normalized_count_reps
 
 
-    spatial_experiment_guide_sets: ExperimentGuideSets = None
+    neighborhood_experiment_guide_sets: ExperimentGuideSets = None
     singletons_experiment_guide_sets: ExperimentGuideSets = None
 
    
@@ -869,21 +891,21 @@ def perform_adjustment(
     singletons_experiment_guide_sets: ExperimentGuideSets = ExperimentGuideSets(negative_control_guides_singletons, positive_control_guides_singletons, observation_guides_singletons)
 
 
-     if enable_neighborhood_prior:
+    if enable_neighborhood_prior:
         if (neighborhood_imputation_prior_strength is None) or (neighborhood_imputation_likelihood_strength is None):
             print("Optimizing neighborhood imputation weights")
-            neighborhood_imputation_prior_strength,neighborhood_imputation_likelihood_strength = NeighborhoodImputationOptimizer.optimize_neighborhood_imputation_prior_strength(spatial_experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, replicate_indices, neighborhood_bandwidth, deviation_weights, KL_guide_set_weights)
+            neighborhood_imputation_prior_strength,neighborhood_imputation_likelihood_strength = NeighborhoodImputationOptimizer.optimize_neighborhood_imputation_prior_strength(neighborhood_experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, replicate_indices, neighborhood_bandwidth, deviation_weights, KL_guide_set_weights)
             print("Selected neighborhood imputation weights: prior={}, likelihood={}".format(neighborhood_imputation_prior_strength, neighborhood_imputation_likelihood_strength))
         
-    if singleton_imputation_model_weights is None:
+    if singleton_imputation_prior_strength is None:
         print("Optimizing singleton imputation weights")
-        singleton_imputation_model_weights = SingletonImputationOptimizer.optimize_singleton_imputation_prior_strength(
+        singleton_imputation_prior_strength = SingletonImputationOptimizer.optimize_singleton_imputation_prior_strength(
             singletons_experiment_guide_sets,
             negative_control_guide_sample_population_total_normalized_counts_reps, 
             negative_control_guide_control_population_total_normalized_counts_reps,
             replicate_indices,
             KL_guide_set_weights)
-        print("Selected singleton imputation weights: {}".format(singleton_imputation_model_weights))
+        print("Selected singleton imputation weights: {}".format(singleton_imputation_prior_strength))
 
 
     if shrinkage_prior_strength is None:
@@ -899,7 +921,7 @@ def perform_adjustment(
             include_positive_control_guides_in_fit,
             neighborhood_imputation_prior_strength, 
             neighborhood_imputation_likelihood_strength,
-            singleton_imputation_model_weights,
+            singleton_imputation_prior_strength,
             neighborhood_bandwidth,
             monte_carlo_trials,
             random_seed)
@@ -941,18 +963,7 @@ def perform_adjustment(
 
     # Perform final model inference:
     def inference_spatial_guide_set(spatial_guide_set: List[Guide], 
-                                    negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
-                                    negative_control_guide_control_population_total_normalized_counts_reps: List[float],
-                                    neighborhood_experiment_guide_sets: ExperimentGuideSets,
-                                    neighborhood_imputation_prior_strength: List[float],
-                                    neighborhood_imputation_likelihood_strength: List[float],
-                                    shrinkage_prior_strength: List[float]
-                                    replicate_indices: List[int],
-                                    neighborhood_bandwidth: float,
-                                    enable_neighborhood_prior: bool,
-                                    monte_carlo_trials: int,
-                                    random_seed: Union[int, None]
-                                    ):
+                                    neighborhood_experiment_guide_sets: ExperimentGuideSets):
         for each_guide in spatial_guide_set:
             # TODO: The code for calculating the posterior inputs for the spatial_imputation model could be modularized so that there are not any repetitive code
 
@@ -981,7 +992,7 @@ def perform_adjustment(
             imputation_posterior_alpha, imputation_posterior_beta = ModelInference.perform_singleton_score_imputation(each_guide, 
             negative_control_guide_sample_population_total_normalized_counts_reps,
             negative_control_guide_control_population_total_normalized_counts_reps,
-            singleton_imputation_model_weights,
+            singleton_imputation_prior_strength,
             replicate_indices)
 
             # Propogate the imputation posterior to the shrinkage prior
@@ -1026,16 +1037,19 @@ def perform_adjustment(
         shrinkage_prior_strength=shrinkage_prior_strength,
         neighborhood_imputation_prior_strength=neighborhood_imputation_prior_strength,
         neighborhood_imputation_likelihood_strength=neighborhood_imputation_likelihood_strength,
+        singleton_imputation_prior_strength=singleton_imputation_prior_strength,
         raw_negative_control_guides=raw_negative_control_guides,
         raw_positive_control_guides=raw_positive_control_guides,
         raw_observation_guides=raw_observation_guides,
         num_replicates=num_replicates,
         include_observational_guides_in_fit=include_observational_guides_in_fit,
         include_positive_control_guides_in_fit=include_positive_control_guides_in_fit,
-        sample_population_amplification_factors=sample_population_scaling_factors,
-        control_population_amplification_factors=control_population_scaling_factors,
+        sample_population_scaling_factors=sample_population_scaling_factors,
+        control_population_scaling_factors=control_population_scaling_factors,
         monte_carlo_trials=monte_carlo_trials,
         enable_neighborhood_prior=enable_neighborhood_prior,
+        deviation_weights=deviation_weights,
+        KL_guide_set_weights=KL_guide_set_weights,
         neighborhood_bandwidth=neighborhood_bandwidth,
         posterior_estimator=posterior_estimator,
         random_seed=random_seed
@@ -1110,7 +1124,7 @@ if __name__ == "__main__":
 
         pop1_raw_count_reps = counts[0].transpose()[0]
         pop2_raw_count_reps = counts[1].transpose()[0]
-        guide = Guide(identifier="observation_{}".format(position), position=position, pop1_raw_count_reps= pop1_raw_count_reps, pop2_raw_count_reps=pop2_raw_count_reps)
+        guide = Guide(identifier="observation_{}".format(position), position=position, sample_population_raw_count_reps= pop1_raw_count_reps, control_population_raw_count_reps=pop2_raw_count_reps)
 
         observation_guides.append(guide)
 
@@ -1119,7 +1133,7 @@ if __name__ == "__main__":
         counts = get_counts(1, null_proportion)
         pop1_raw_count_reps = counts[0].transpose()[0]
         pop2_raw_count_reps = counts[1].transpose()[0]
-        guide = Guide(identifier="negative_{}".format(i), position=None, pop1_raw_count_reps= pop1_raw_count_reps, pop2_raw_count_reps=pop2_raw_count_reps)
+        guide = Guide(identifier="negative_{}".format(i), position=None, sample_population_raw_count_reps= pop1_raw_count_reps, control_population_raw_count_reps=pop2_raw_count_reps)
 
         negative_guides.append(guide)
 
@@ -1131,7 +1145,7 @@ if __name__ == "__main__":
         counts = get_counts(1, positive_proportion)
         pop1_raw_count_reps = counts[0].transpose()[0] + 1
         pop2_raw_count_reps = counts[1].transpose()[0] + 1
-        guide = Guide(identifier="positive_{}".format(i), position=None, pop1_raw_count_reps= pop1_raw_count_reps, pop2_raw_count_reps=pop2_raw_count_reps)
+        guide = Guide(identifier="positive_{}".format(i), position=None, sample_population_raw_count_reps= pop1_raw_count_reps, control_population_raw_count_reps=pop2_raw_count_reps)
 
         positive_guides.append(guide)
 
@@ -1145,17 +1159,17 @@ if __name__ == "__main__":
         num_replicates = reps,
         include_observational_guides_in_fit = False,
         include_positive_control_guides_in_fit = False,
-        pop1_amplification_factors = pop1_dup_factor_list,
-        pop2_amplification_factors = pop2_dup_factor_list,
+        sample_population_scaling_factors = pop1_dup_factor_list,
+        control_population_scaling_factors = pop2_dup_factor_list,
         monte_carlo_trials = 1000,
-        enable_spatial_prior =  True,
-        spatial_bandwidth = 7,
-        neighborhood_imputation_model_weights= None,
-        singleton_imputation_model_weights = None,
-        baseline_proportion = 0.5, # TODO: Perform validation between (0,1), also accept None value for perfrming no normalization (or have that be another argument)
+        enable_neighborhood_prior =  True,
+        neighborhood_bandwidth = 7,
+        neighborhood_imputation_prior_strength = [0.0001549,  0.00051831, 0.00070273],
+        neighborhood_imputation_likelihood_strength = [0.39062681, 0.3020106, 0.17357199], 
+        singleton_imputation_prior_strength = [0.00142066, 0.0013584,  0.00141909],
         deviation_weights = [1,1,1],
-        KL_score_weights = None,
-        shrinkage_prior_strength = None,
+        KL_guide_set_weights = None,
+        shrinkage_prior_strength = [1.50897246, 1.08297809, 2.45095095],
         posterior_estimator = "mean",
         random_seed = 234
         )
