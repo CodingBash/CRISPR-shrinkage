@@ -76,7 +76,7 @@ def prepare_crispr_shrinkage_visualization_input(crispr_shrinkage_result: Crispr
     control_population_negative_control_total_normalized_count = np.asarray([guide.control_population_normalized_count_reps for guide in crispr_shrinkage_result.adjusted_negative_control_guides]).sum(axis=0)
 
 
-    calculate_raw_lfc = lambda guide, rep_i: np.log((guide.sample_population_normalized_count_reps[rep_i] * control_population_negative_controls[rep_i])/(guide.control_population_normalized_count_reps[rep_i] * sample_population_negative_controls[rep_i]))
+    calculate_raw_lfc = lambda guide, rep_i: np.log((guide.sample_population_normalized_count_reps[rep_i] * control_population_negative_control_total_normalized_count[rep_i])/(guide.control_population_normalized_count_reps[rep_i] * sample_population_negative_control_total_normalized_count[rep_i]))
 
 
     observational_raw_lfc_rep = np.asarray([[calculate_raw_lfc(guide, rep_i) for guide in crispr_shrinkage_result.adjusted_observation_guides]  for rep_i in replicate_indices])
@@ -166,7 +166,7 @@ def visualize_raw_vs_adjusted_score_scatter(crispr_shrinkage_visualization_input
     for rep_i in crispr_shrinkage_visualization_input.replicate_indices:
         plt.scatter(crispr_shrinkage_visualization_input.positive_control_raw_lfc_rep[rep_i], crispr_shrinkage_visualization_input.positive_control_lfc_rep[rep_i], c=crispr_shrinkage_visualization_input.positive_control_count_rep[rep_i], alpha=0.3, marker="o")
         plt.scatter(crispr_shrinkage_visualization_input.negative_control_raw_lfc_rep[rep_i], crispr_shrinkage_visualization_input.negative_control_lfc_rep[rep_i], c=crispr_shrinkage_visualization_input.negative_control_count_rep[rep_i], alpha=0.3, marker="o")
-        plt.scatter(crispr_shrinkage_visualization_input.observational_control_raw_lfc_rep[rep_i], crispr_shrinkage_visualization_input.observational_control_lfc_rep[rep_i], c=crispr_shrinkage_visualization_input.observational_control_count_rep[rep_i], alpha=0.3, marker="o")
+        plt.scatter(crispr_shrinkage_visualization_input.observational_raw_lfc_rep[rep_i], crispr_shrinkage_visualization_input.observational_lfc_rep[rep_i], c=crispr_shrinkage_visualization_input.observational_count_rep[rep_i], alpha=0.3, marker="o")
         plt.colorbar(label="Total Normalized Count")
         plt.xlabel("Raw LFC")
         plt.ylabel("Adjusted LFC")
@@ -175,10 +175,10 @@ def visualize_raw_vs_adjusted_score_scatter(crispr_shrinkage_visualization_input
 
 def visualize_raw_and_adjusted_score_by_position_scatter(crispr_shrinkage_visualization_input: CrisprShrinkageVisualizationInput):
     for rep_i in crispr_shrinkage_visualization_input.replicate_indices:
-        plt.scatter(crispr_shrinkage_visualization_input.explanatory_position, crispr_shrinkage_visualization_input.explanatory_lfc_rep[rep_i], s=crispr_shrinkage_visualization_input.explanatory_count_rep[rep_i])
+        plt.scatter(crispr_shrinkage_visualization_input.explanatory_positions, crispr_shrinkage_visualization_input.explanatory_lfc_rep[rep_i], s=crispr_shrinkage_visualization_input.explanatory_count_rep[rep_i])
         plt.title("Adjusted LFC")
         plt.show()
-        plt.scatter(crispr_shrinkage_visualization_input.explanatory_position, crispr_shrinkage_visualization_input.explanatory_raw_lfc_rep[rep_i], s=crispr_shrinkage_visualization_input.explanatory_count_rep[rep_i])
+        plt.scatter(crispr_shrinkage_visualization_input.explanatory_positions, crispr_shrinkage_visualization_input.explanatory_raw_lfc_rep[rep_i], s=crispr_shrinkage_visualization_input.explanatory_count_rep[rep_i])
         plt.title("Raw LFC")
         plt.show()
 
@@ -187,9 +187,9 @@ def visualize_combined_adjusted_score_by_position_scatter(crispr_shrinkage_visua
     ax = fig.add_subplot(111)
 
     for rep_i in crispr_shrinkage_visualization_input.replicate_indices:
-        ax.scatter(crispr_shrinkage_visualization_input.explanatory_position, crispr_shrinkage_visualization_input.explanatory_lfc_rep[rep_i], s=crispr_shrinkage_visualization_input.explanatory_count_rep[rep_i], alpha=0.3, label="Replicate {}".format(rep_i))
-    ax.scatter(crispr_shrinkage_visualization_input.explanatory_position, crispr_shrinkage_visualization_input.explanatory_lfc, marker="s", s=2, label="Combined")
-    ax.plot(crispr_shrinkage_visualization_input.explanatory_position, crispr_shrinkage_visualization_input.explanatory_lfc,color="red", alpha=0.2)
+        ax.scatter(crispr_shrinkage_visualization_input.explanatory_positions, crispr_shrinkage_visualization_input.explanatory_lfc_rep[rep_i], s=crispr_shrinkage_visualization_input.explanatory_count_rep[rep_i], alpha=0.3, label="Replicate {}".format(rep_i))
+    ax.scatter(crispr_shrinkage_visualization_input.explanatory_positions, crispr_shrinkage_visualization_input.explanatory_lfc, marker="s", s=2, label="Combined")
+    ax.plot(crispr_shrinkage_visualization_input.explanatory_positions, crispr_shrinkage_visualization_input.explanatory_lfc,color="red", alpha=0.2)
     ax.set_title("Region Scores")
     ax.set_xlabel("Coordinate")
     ax.set_ylabel("Adjusted LFC")
@@ -203,27 +203,27 @@ def visualize_combined_score_credible_interval_scatter(crispr_shrinkage_visualiz
     fig = plt.figure(figsize=(20, 4))
     ax = fig.add_subplot(111)
 
-    ax.scatter(crispr_shrinkage_visualization_input.explanatory_position, crispr_shrinkage_visualization_input.explanatory_lfc, marker="s",color="black", s=2, label="Combined")
+    ax.scatter(crispr_shrinkage_visualization_input.explanatory_positions, crispr_shrinkage_visualization_input.explanatory_lfc, marker="s",color="black", s=2, label="Combined")
 
-    ax.errorbar(crispr_shrinkage_visualization_input.explanatory_position, crispr_shrinkage_visualization_input.explanatory_lfc, (crispr_shrinkage_visualization_input.explanatory_lfc-explanatory_lfc_CI_low, explanatory_lfc_CI_up-crispr_shrinkage_visualization_input.explanatory_lfc), solid_capstyle='projecting', capsize=1, alpha=0.3)
-    ax.plot(crispr_shrinkage_visualization_input.explanatory_position, crispr_shrinkage_visualization_input.explanatory_lfc,color="red", alpha=0.2)
+    ax.errorbar(crispr_shrinkage_visualization_input.explanatory_positions, crispr_shrinkage_visualization_input.explanatory_lfc, (crispr_shrinkage_visualization_input.explanatory_lfc-explanatory_lfc_CI_low, explanatory_lfc_CI_up-crispr_shrinkage_visualization_input.explanatory_lfc), solid_capstyle='projecting', capsize=1, alpha=0.3)
+    ax.plot(crispr_shrinkage_visualization_input.explanatory_positions, crispr_shrinkage_visualization_input.explanatory_lfc,color="red", alpha=0.2)
     ax.set_title("Region Scores")
     ax.set_xlabel("Coordinate")
     ax.set_ylabel("Adjusted LFC")
     ax.legend()
     plt.show()
 
-def visualize_standardized_raw_vs_adjusted_score_by_position_scatter(crispr_shrinkage_visualization_input: CrisprShrinkageVisualizationInput):
+def visualize_all_adjusted_score_credible_interval_by_position_scatter(crispr_shrinkage_visualization_input: CrisprShrinkageVisualizationInput):
     for rep_i in crispr_shrinkage_visualization_input.replicate_indices:
         fig = plt.figure(figsize=(20, 4))
         ax = fig.add_subplot(111)
         explanatory_lfc_rep_rep_standardized = stats.zscore(crispr_shrinkage_visualization_input.explanatory_lfc_rep[rep_i])
         explanatory_raw_lfc_rep_standardized = stats.zscore(crispr_shrinkage_visualization_input.explanatory_raw_lfc_rep[rep_i])
 
-        ax.scatter(crispr_shrinkage_visualization_input.explanatory_position,explanatory_lfc_rep_rep_standardized, s=np.asarray(crispr_shrinkage_visualization_input.explanatory_count_rep[rep_i])*0.1, color="blue", alpha=0.85, label="Adjusted")
-        ax.scatter(crispr_shrinkage_visualization_input.explanatory_position,explanatory_raw_lfc_rep_standardized, s=np.asarray(crispr_shrinkage_visualization_input.explanatory_count_rep[rep_i])*0.1, color="black", alpha=0.85, label="Raw") # Can color based on which of the guides are in the observational set and which are not (specifically which are in the positive, negative.
-        for guide_i in range(len(crispr_shrinkage_visualization_input.explanatory_position)):
-            ax.arrow(crispr_shrinkage_visualization_input.explanatory_position[guide_i], explanatory_raw_lfc_rep_standardized[guide_i],0, explanatory_lfc_rep_rep_standardized[guide_i] - explanatory_raw_lfc_rep_standardized[guide_i], head_width=1, head_length=0.2, alpha=0.4, length_includes_head=True, color="black")
+        ax.scatter(crispr_shrinkage_visualization_input.explanatory_positions,explanatory_lfc_rep_rep_standardized, s=np.asarray(crispr_shrinkage_visualization_input.explanatory_count_rep[rep_i])*0.1, color="blue", alpha=0.85, label="Adjusted")
+        ax.scatter(crispr_shrinkage_visualization_input.explanatory_positions,explanatory_raw_lfc_rep_standardized, s=np.asarray(crispr_shrinkage_visualization_input.explanatory_count_rep[rep_i])*0.1, color="black", alpha=0.85, label="Raw") # Can color based on which of the guides are in the observational set and which are not (specifically which are in the positive, negative.
+        for guide_i in range(len(crispr_shrinkage_visualization_input.explanatory_positions)):
+            ax.arrow(crispr_shrinkage_visualization_input.explanatory_positions[guide_i], explanatory_raw_lfc_rep_standardized[guide_i],0, explanatory_lfc_rep_rep_standardized[guide_i] - explanatory_raw_lfc_rep_standardized[guide_i], head_width=1, head_length=0.2, alpha=0.4, length_includes_head=True, color="black")
 
         ax.set_xlabel("Position")
         ax.set_ylabel("Standardized LFC")
@@ -231,7 +231,7 @@ def visualize_standardized_raw_vs_adjusted_score_by_position_scatter(crispr_shri
         ax.set_title("Replicate {}".format(rep_i+1))
         plt.show()
 
-def visualize_standardized_raw_vs_adjusted_score_by_position_scatter(crispr_shrinkage_visualization_input: CrisprShrinkageVisualizationInput):
+def visualize_standardized_adjusted_score_by_position_scatter(crispr_shrinkage_visualization_input: CrisprShrinkageVisualizationInput):
     explanatory_lfc_CI_low = np.asarray([CI[0] for CI in crispr_shrinkage_visualization_input.explanatory_lfc_CI])
     explanatory_lfc_CI_up = np.asarray([CI[1] for CI in crispr_shrinkage_visualization_input.explanatory_lfc_CI])
     
@@ -240,12 +240,21 @@ def visualize_standardized_raw_vs_adjusted_score_by_position_scatter(crispr_shri
     ax = fig.add_subplot(111)
 
     for rep_i in crispr_shrinkage_visualization_input.replicate_indices:
-        ax.scatter(crispr_shrinkage_visualization_input.explanatory_position, crispr_shrinkage_visualization_input.explanatory_lfc_rep[rep_i], s=np.asarray(crispr_shrinkage_visualization_input.explanatory_count_rep[rep_i])*0.5, alpha=0.3, label="Replicate {}".format(rep_i))
-    ax.scatter(crispr_shrinkage_visualization_input.explanatory_position, crispr_shrinkage_visualization_input.explanatory_lfc, marker="s",color="black", s=10, label="Combined")
-    ax.errorbar(crispr_shrinkage_visualization_input.explanatory_position, crispr_shrinkage_visualization_input.explanatory_lfc, (crispr_shrinkage_visualization_input.explanatory_lfc-explanatory_lfc_CI_low, explanatory_lfc_CI_up-crispr_shrinkage_visualization_input.explanatory_lfc), solid_capstyle='projecting', capsize=1, alpha=0.3, linestyle='')
+        ax.scatter(crispr_shrinkage_visualization_input.explanatory_positions, crispr_shrinkage_visualization_input.explanatory_lfc_rep[rep_i], s=np.asarray(crispr_shrinkage_visualization_input.explanatory_count_rep[rep_i])*0.5, alpha=0.3, label="Replicate {}".format(rep_i))
+    ax.scatter(crispr_shrinkage_visualization_input.explanatory_positions, crispr_shrinkage_visualization_input.explanatory_lfc, marker="s",color="black", s=10, label="Combined")
+    ax.errorbar(crispr_shrinkage_visualization_input.explanatory_positions, crispr_shrinkage_visualization_input.explanatory_lfc, (crispr_shrinkage_visualization_input.explanatory_lfc-explanatory_lfc_CI_low, explanatory_lfc_CI_up-crispr_shrinkage_visualization_input.explanatory_lfc), solid_capstyle='projecting', capsize=1, alpha=0.3, linestyle='')
 
     ax.set_title("Region Scores")
     ax.set_xlabel("Coordinate")
     ax.set_ylabel("Adjusted LFC")
     ax.legend()
     plt.show()
+
+def visualize_all(crispr_shrinkage_visualization_input: CrisprShrinkageVisualizationInput):
+    visualize_lfc_histogram(crispr_shrinkage_visualization_input)
+    visualize_raw_vs_adjusted_score_scatter(crispr_shrinkage_visualization_input)
+    visualize_raw_and_adjusted_score_by_position_scatter(crispr_shrinkage_visualization_input)
+    visualize_combined_adjusted_score_by_position_scatter(crispr_shrinkage_visualization_input)
+    visualize_combined_score_credible_interval_scatter(crispr_shrinkage_visualization_input)
+    visualize_all_adjusted_score_credible_interval_by_position_scatter(crispr_shrinkage_visualization_input)
+    visualize_standardized_adjusted_score_by_position_scatter(crispr_shrinkage_visualization_input)
