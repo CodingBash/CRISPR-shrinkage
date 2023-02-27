@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 from typing import List, Union, Tuple
 from scipy.stats import beta, chi
-from matplotlib import pyplot as plt # TODO: Add this to Poetry dependency
+from matplotlib import pyplot as plt
 import numpy as np
 import scipy.stats
 import scipy.special as sc
@@ -17,12 +17,14 @@ from scipy.stats import percentileofscore
 import random
 
 class Guide:
-    def __init__(self, identifier, position: Union[int, None], sample_population_raw_count_reps: List[int], control_population_raw_count_reps: List[int]):
+    def __init__(self, identifier, position: Union[int, None], sample_population_raw_count_reps: List[int], control_population_raw_count_reps: List[int],
+    is_explanatory: bool):
         assert len(sample_population_raw_count_reps) == len(control_population_raw_count_reps), "Counts for two populations must be same length"
         self.identifier = identifier
         self.position = position
         self.sample_population_raw_count_reps = np.asarray(sample_population_raw_count_reps)
         self.control_population_raw_count_reps = np.asarray(control_population_raw_count_reps)
+        self.is_explanatory = is_explanatory
 
 class ExperimentGuideSets:
     def __init__(self, negative_control_guides: List[Guide], positive_control_guides: List[Guide], observation_guides: List[Guide]):
