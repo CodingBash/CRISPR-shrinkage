@@ -2,6 +2,7 @@
 from typing import List, Union, Tuple
 from scipy.stats import beta, chi
 from matplotlib import pyplot as plt
+from scipy.stats import norm
 import numpy as np
 import scipy.stats
 import scipy.special as sc
@@ -32,6 +33,7 @@ class ExperimentGuideSets:
         self.positive_control_guides = positive_control_guides
         self.observation_guides = observation_guides
 
+# TODO: Change to dataclass
 class CrisprShrinkageResult:
     '''Represents the final object passed back with the adjusted scores'''
 
@@ -39,6 +41,8 @@ class CrisprShrinkageResult:
             adjusted_negative_control_guides: List[Guide],
             adjusted_observation_guides: List[Guide],
             adjusted_positive_control_guides: List[Guide],
+            negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
+            negative_control_guide_control_population_total_normalized_counts_reps: List[float],
             raw_negative_control_guides: List[Guide],
             raw_positive_control_guides: List[Guide],
             raw_observation_guides: List[Guide],
@@ -62,6 +66,8 @@ class CrisprShrinkageResult:
         self.adjusted_negative_control_guides=adjusted_negative_control_guides
         self.adjusted_observation_guides=adjusted_observation_guides
         self.adjusted_positive_control_guides=adjusted_positive_control_guides
+        self.negative_control_guide_sample_population_total_normalized_counts_reps = negative_control_guide_sample_population_total_normalized_counts_reps
+        self.negative_control_guide_control_population_total_normalized_counts_reps = negative_control_guide_control_population_total_normalized_counts_reps
         self.shrinkage_prior_strength=shrinkage_prior_strength
         self.neighborhood_imputation_prior_strength=neighborhood_imputation_prior_strength
         self.neighborhood_imputation_likelihood_strength=neighborhood_imputation_likelihood_strength
@@ -83,10 +89,15 @@ class CrisprShrinkageResult:
         self.random_seed=random_seed
 
 class ShrinkageResult:
-    def __init__(self, guide_count_LFC_samples_normalized_list: List[List[float]],
-            guide_count_posterior_LFC_samples_normalized_list: List[List[float]]):
+    def __init__(self, 
+        guide_count_LFC_samples_normalized_list: List[List[float]],
+        guide_count_posterior_LFC_samples_normalized_list: List[List[float]],
+        posterior_guide_count_sample_alpha: List[float],
+        posterior_guide_count_control_beta: List[float]):
             self.guide_count_LFC_samples_normalized_list=guide_count_LFC_samples_normalized_list
             self.guide_count_posterior_LFC_samples_normalized_list=guide_count_posterior_LFC_samples_normalized_list
+            self.posterior_guide_count_sample_alpha=posterior_guide_count_sample_alpha
+            self.posterior_guide_count_control_beta=posterior_guide_count_control_beta
 
 class StatisticalHelperMethods:
     @staticmethod
@@ -208,7 +219,26 @@ class StatisticalHelperMethods:
             LFC_posterior_mean_per_guide_M_BP_pval = 1-chi.cdf(LFC_posterior_mean_per_guide_M_BP_statistic, 1) # TODO: Double check if the degree of freedom is correct
 
             return LFC_posterior_mean_per_guide_M_BP_statistic
+    
+    @staticmethod
+    def calculate_norm_prob_0(loc, scale):
+        return norm.pdf(0, loc, scale)
 
+    @staticmethod
+    def calculate_norm_lt_0(loc, scale):
+        return cdf(0, loc, scale)
+
+    @staticmethod
+    def calculate_norm_lt_0_mc(monte_carlo_samples: List[float]):
+        return sum(monte_carlo_samples<0)/len(monte_carlo_samples)
+    
+    @staticmethod
+    def calculate_norm_gt_0(loc, scale):
+        return 1-StatisticalHelperMethods.calculate_norm_lt_0(loc, scale)
+
+    @staticmethod
+    def calculate_norm_gt_0_mc(monte_carlo_samples: List[float]):
+        return sum(monte_carlo_samples>0)/len(monte_carlo_samples)
 
 #-------------------------Helper and Inference functions
 def determine_guide_fit(guide: Guide, contains_position: Union[bool, None]):
@@ -279,6 +309,18 @@ class ModelInference:
         control_population_spatial_posterior_beta = (neighborhood_imputation_prior_strength*negative_control_guide_control_population_total_normalized_counts_reps[replicate_indices]) + (neighborhood_imputation_likelihood_strength * each_guide_control_population_spatial_contribution_reps)
         imputation_posterior_beta = control_population_spatial_posterior_beta
 
+        max_imputation_posterior = 1000 # Setting this as max value, since calculating the KL divergence of a very high posterior value may result in a precision error
+        for rep_i in range(len(replicate_indices)):
+            if max(imputation_posterior_alpha[rep_i], imputation_posterior_beta[rep_i]) > max_imputation_posterior:
+                print("Downscaling posterior: {}, {}".format(imputation_posterior_alpha[rep_i],imputation_posterior_beta[rep_i]))
+                print("Other params: Prior strength={}, likelihood_strength={}".format(neighborhood_imputation_prior_strength,neighborhood_imputation_likelihood_strength ))
+                if imputation_posterior_alpha[rep_i] > imputation_posterior_beta[rep_i]:
+                    downscale_factor = max_imputation_posterior/imputation_posterior_alpha[rep_i]
+                else:
+                    downscale_factor = max_imputation_posterior/imputation_posterior_beta[rep_i]
+                imputation_posterior_alpha[rep_i] = imputation_posterior_alpha[rep_i] * downscale_factor
+                imputation_posterior_beta[rep_i] = imputation_posterior_beta[rep_i] * downscale_factor
+
         return imputation_posterior_alpha, imputation_posterior_beta, each_guide_sample_population_spatial_contribution_reps, each_guide_control_population_spatial_contribution_reps
 
     @staticmethod
@@ -318,82 +360,83 @@ class ModelInference:
         
         guide_count_posterior_LFC_samples_normalized_list = np.asarray([np.log(guide_count_posterior_beta_samples_list[rep_order]/ control_count_posterior_beta_samples_list[rep_order]) for rep_order in replicate_order])
         
-        # NOTE: When needed, I can add more to this object
-        shrinkage_result = ShrinkageResult(guide_count_LFC_samples_normalized_list=guide_count_LFC_samples_normalized_list,
-        guide_count_posterior_LFC_samples_normalized_list=guide_count_posterior_LFC_samples_normalized_list)
+       
+        posterior_alpha = np.asarray([shrinkage_prior_alpha[rep_order] + each_guide.sample_population_normalized_count_reps[rep_i] for rep_order, rep_i in enumerate(replicate_indices)])
+        posterior_beta = np.asarray([shrinkage_prior_beta[rep_order] + each_guide.control_population_normalized_count_reps[rep_i] for rep_order, rep_i in enumerate(replicate_indices)])
+
+         # NOTE: When needed, I can add more to this object
+        shrinkage_result = ShrinkageResult(
+            guide_count_LFC_samples_normalized_list=guide_count_LFC_samples_normalized_list,
+            guide_count_posterior_LFC_samples_normalized_list=guide_count_posterior_LFC_samples_normalized_list,
+            posterior_guide_count_sample_alpha=posterior_alpha,
+            posterior_guide_count_control_beta=posterior_beta
+            )
 
         return shrinkage_result
 
 
+
+
+
 #-------------------------Optimization functions
-class SingletonImputationOptimizer:
 
-    @staticmethod
-    def objective_function_of_each_guide_set(rep_i, 
-                                            guide_set: List[Guide], 
-                                            negative_control_guide_sample_population_total_normalized_counts_reps: List[float], 
-                                            negative_control_guide_control_population_total_normalized_counts_reps: List[float],
-                                            params: float):
-        singleton_imputation_prior_strength_test = params
-        KL_guide_imputation_score_total: float = 0
-
-        for each_guide in guide_set:
-            # Get the posterior
-            imputation_posterior_alpha, imputation_posterior_beta = ModelInference.perform_singleton_score_imputation(each_guide, 
-                negative_control_guide_sample_population_total_normalized_counts_reps, 
-                negative_control_guide_control_population_total_normalized_counts_reps, 
-                singleton_imputation_prior_strength_test,
-                [rep_i])
-
-            imputation_posterior_alpha = imputation_posterior_alpha[0]
-            imputation_posterior_beta = imputation_posterior_beta[0]
-
-            true_alpha = each_guide.sample_population_normalized_count_reps[rep_i]
-            true_beta = each_guide.control_population_normalized_count_reps[rep_i]
-
-            # Calculate KL divergence between the posterior and the likelihood
-            KL_guide_imputation_score: float = StatisticalHelperMethods.KL_beta(true_alpha, true_beta, imputation_posterior_alpha, imputation_posterior_beta)
-            
-            # Add score to the main placeholder to get the final sum
-            KL_guide_imputation_score_total = KL_guide_imputation_score_total + KL_guide_imputation_score 
-            
-        return KL_guide_imputation_score_total, len(guide_set)
-
-    @staticmethod
-    def objective_function_of_all_guides(rep_i: int,
-                                        experiment_guide_sets: ExperimentGuideSets,
-                                        negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
+def singleton_imputation_objective_function_of_each_guide_set(rep_i, 
+                                        guide_set: List[Guide], 
+                                        negative_control_guide_sample_population_total_normalized_counts_reps: List[float], 
                                         negative_control_guide_control_population_total_normalized_counts_reps: List[float],
                                         params: float):
-        KL_guide_imputation_score_total_negative, negative_total_n = SingletonImputationOptimizer.objective_function_of_each_guide_set(rep_i, experiment_guide_sets.negative_control_guides, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, params)
-        KL_guide_imputation_score_total_positive, positive_total_n = SingletonImputationOptimizer.objective_function_of_each_guide_set(rep_i, experiment_guide_sets.positive_control_guides, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, params)
-        KL_guide_imputation_score_total_observation, observation_total_n = SingletonImputationOptimizer.objective_function_of_each_guide_set(rep_i, experiment_guide_sets.observation_guides, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, params)
-        
-        total_n = (negative_total_n+positive_total_n+observation_total_n)
-        
-        
-        KL_guide_imputation_score_total_negative_avg = np.inf if negative_total_n == 0 else KL_guide_imputation_score_total_negative/negative_total_n
-        KL_guide_imputation_score_total_positive_avg = np.inf if positive_total_n == 0 else KL_guide_imputation_score_total_positive/positive_total_n
-        KL_guide_imputation_score_total_observation_avg = np.inf if observation_total_n == 0 else KL_guide_imputation_score_total_observation/observation_total_n
-        KL_guide_imputation_score_total_combined_avg = np.inf if total_n == 0 else (KL_guide_imputation_score_total_negative + KL_guide_imputation_score_total_positive + KL_guide_imputation_score_total_observation) / total_n
-        
-        return KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg
+    singleton_imputation_prior_strength_test = params
+    KL_guide_imputation_score_total: float = 0
 
-    @staticmethod
-    def optimize_singleton_imputation_prior_strength(
-        experiment_guide_sets: ExperimentGuideSets, 
-        negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
-        negative_control_guide_control_population_total_normalized_counts_reps: List[float], 
-        replicate_indices: List[int],
-        KL_guide_set_weights: Union[List[float], None]) -> Tuple[List[float], List[float]]:
+    for each_guide in guide_set:
+        # Get the posterior
+        imputation_posterior_alpha, imputation_posterior_beta = ModelInference.perform_singleton_score_imputation(each_guide, 
+            negative_control_guide_sample_population_total_normalized_counts_reps, 
+            negative_control_guide_control_population_total_normalized_counts_reps, 
+            singleton_imputation_prior_strength_test,
+            [rep_i])
 
-        def weighted_objective_function_of_all_guides(rep_i: int,
+        imputation_posterior_alpha = imputation_posterior_alpha[0]
+        imputation_posterior_beta = imputation_posterior_beta[0]
+
+        true_alpha = each_guide.sample_population_normalized_count_reps[rep_i]
+        true_beta = each_guide.control_population_normalized_count_reps[rep_i]
+
+        # Calculate KL divergence between the posterior and the likelihood
+        KL_guide_imputation_score: float = StatisticalHelperMethods.KL_beta(true_alpha, true_beta, imputation_posterior_alpha, imputation_posterior_beta)
+        
+        # Add score to the main placeholder to get the final sum
+        KL_guide_imputation_score_total = KL_guide_imputation_score_total + KL_guide_imputation_score 
+        
+    return KL_guide_imputation_score_total, len(guide_set)
+
+def singleton_imputation_objective_function_of_all_guides(rep_i: int,
+                                    experiment_guide_sets: ExperimentGuideSets,
+                                    negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
+                                    negative_control_guide_control_population_total_normalized_counts_reps: List[float],
+                                    params: float):
+    KL_guide_imputation_score_total_negative, negative_total_n = singleton_imputation_objective_function_of_each_guide_set(rep_i, experiment_guide_sets.negative_control_guides, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, params)
+    KL_guide_imputation_score_total_positive, positive_total_n = singleton_imputation_objective_function_of_each_guide_set(rep_i, experiment_guide_sets.positive_control_guides, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, params)
+    KL_guide_imputation_score_total_observation, observation_total_n = singleton_imputation_objective_function_of_each_guide_set(rep_i, experiment_guide_sets.observation_guides, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, params)
+    
+    total_n = (negative_total_n+positive_total_n+observation_total_n)
+    
+    
+    KL_guide_imputation_score_total_negative_avg = np.inf if negative_total_n == 0 else KL_guide_imputation_score_total_negative/negative_total_n
+    KL_guide_imputation_score_total_positive_avg = np.inf if positive_total_n == 0 else KL_guide_imputation_score_total_positive/positive_total_n
+    KL_guide_imputation_score_total_observation_avg = np.inf if observation_total_n == 0 else KL_guide_imputation_score_total_observation/observation_total_n
+    KL_guide_imputation_score_total_combined_avg = np.inf if total_n == 0 else (KL_guide_imputation_score_total_negative + KL_guide_imputation_score_total_positive + KL_guide_imputation_score_total_observation) / total_n
+    
+    return KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg
+
+
+def singleton_imputation_weighted_objective_function_of_all_guides(rep_i: int,
                                                         experiment_guide_sets: ExperimentGuideSets,
                                                         negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
                                                         negative_control_guide_control_population_total_normalized_counts_reps: List[float],
                                                         KL_guide_set_weights: Union[List[float], None],
                                                         params: float):
-            KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = SingletonImputationOptimizer.objective_function_of_all_guides(rep_i, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, params)
+            KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = singleton_imputation_objective_function_of_all_guides(rep_i, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, params)
 
             if KL_guide_set_weights is None:
                 return KL_guide_imputation_score_total_combined_avg
@@ -401,12 +444,26 @@ class SingletonImputationOptimizer:
                 combined_score = (KL_guide_set_weights[0]*KL_guide_imputation_score_total_negative_avg) + (KL_guide_set_weights[1]*KL_guide_imputation_score_total_positive_avg) + (KL_guide_set_weights[2]*KL_guide_imputation_score_total_observation_avg)
                 return combined_score
 
+class SingletonImputationOptimizer:
+    singleton_imputation_objective_function_of_each_guide_set = staticmethod(singleton_imputation_objective_function_of_each_guide_set)
+    singleton_imputation_objective_function_of_all_guides = staticmethod(singleton_imputation_objective_function_of_all_guides)
+    singleton_imputation_weighted_objective_function_of_all_guides = staticmethod(singleton_imputation_weighted_objective_function_of_all_guides)
+
+    @staticmethod
+    def optimize_singleton_imputation_prior_strength(
+        experiment_guide_sets: ExperimentGuideSets, 
+        negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
+        negative_control_guide_control_population_total_normalized_counts_reps: List[float], 
+        replicate_indices: List[int],
+        KL_guide_set_weights: Union[List[float], None],
+        cores: int) -> Tuple[List[float], List[float]]:
+
 
 
 
         singleton_imputation_prior_strength_selected: List[float] = []
         for rep_i in replicate_indices:
-            weighted_objective_function_of_all_guides_p = functools.partial(weighted_objective_function_of_all_guides, rep_i, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, KL_guide_set_weights)
+            weighted_objective_function_of_all_guides_p = functools.partial(singleton_imputation_weighted_objective_function_of_all_guides, rep_i, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, KL_guide_set_weights)
             
             param_vals=[]
             loss_vals=[]
@@ -423,7 +480,10 @@ class SingletonImputationOptimizer:
             optimizer_bounds_a = max_posterior_bounds_a / negative_control_guide_sample_population_total_normalized_counts_reps[rep_i]
             optimizer_bounds_b = max_posterior_bounds_b / negative_control_guide_control_population_total_normalized_counts_reps[rep_i]
             optimizer_upper_bound = np.min([optimizer_bounds_a, optimizer_bounds_b])
-            res = scipy.optimize.differential_evolution(weighted_objective_function_of_all_guides_p, bounds=[(0.000001, optimizer_upper_bound)], callback=store_values, maxiter= 10000) 
+            tolerance = optimizer_upper_bound / 1000
+            print("Singleton optimization upper bound: {}".format(optimizer_upper_bound))
+            print("Tolerance: {}".format(tolerance))
+            res = scipy.optimize.differential_evolution(weighted_objective_function_of_all_guides_p, bounds=[(0.000001, optimizer_upper_bound)], callback=store_values, maxiter= 10000, tol=0.05, workers=cores) 
 
             plt.scatter(param_vals, loss_vals)
             plt.xlabel("Prior Strength")
@@ -434,7 +494,7 @@ class SingletonImputationOptimizer:
             if res.success is True:
                 singleton_imputation_prior_strength = res.x
                 
-                KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = SingletonImputationOptimizer.objective_function_of_all_guides(rep_i, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, res.x)
+                KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = singleton_imputation_objective_function_of_all_guides(rep_i, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, res.x)
 
                 print("KL Negative Set Average: {}".format(KL_guide_imputation_score_total_negative_avg))
                 print("KL Positive Set Average: {}".format(KL_guide_imputation_score_total_positive_avg))
@@ -449,83 +509,103 @@ class SingletonImputationOptimizer:
         return singleton_imputation_prior_strength_selected
 
 
-class NeighborhoodImputationOptimizer:
-    @staticmethod
-    def objective_function_of_each_guide_set(rep_i: int,
-                                                guide_set: List[Guide],
-                                                neighborhood_optimization_guide_sample_size: int,
-                                                experiment_guide_sets: ExperimentGuideSets,
-                                                negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
-                                                negative_control_guide_control_population_total_normalized_counts_reps: List[float],
-                                                neighborhood_bandwidth: float,
-                                                deviation_weights: List[float],
-                                                params: Tuple[float, float]):
-        neighborhood_imputation_prior_strength_test, neighborhood_imputation_likelihood_strength_test = params
+
+def neighborhood_imputation_objective_function_of_each_guide_set(rep_i: int,
+                                            guide_set: List[Guide],
+                                            neighborhood_optimization_guide_sample_size: int,
+                                            experiment_guide_sets: ExperimentGuideSets,
+                                            negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
+                                            negative_control_guide_control_population_total_normalized_counts_reps: List[float],
+                                            neighborhood_bandwidth: float,
+                                            deviation_weights: List[float],
+                                            params: Tuple[float, float]):
+    neighborhood_imputation_prior_strength_test, neighborhood_imputation_likelihood_strength_test = params
+    
+    if len(guide_set) == 0:
+        return 0,0,0
+
+    KL_guide_imputation_score_total: float = 0
+
+    neighborhood_optimization_guide_sample_size_i = len(guide_set) if neighborhood_optimization_guide_sample_size > len(guide_set) else neighborhood_optimization_guide_sample_size
+    sampled_guide_set = random.sample(guide_set, neighborhood_optimization_guide_sample_size_i)
+    for each_guide in sampled_guide_set:
+        # Get the posterior
+        imputation_posterior_alpha, imputation_posterior_beta, each_guide_sample_population_spatial_contribution_reps, each_guide_control_population_spatial_contribution_reps = ModelInference.perform_neighboorhood_score_imputation(each_guide, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_imputation_prior_strength_test, neighborhood_imputation_likelihood_strength_test, [rep_i], neighborhood_bandwidth)
+
+        imputation_posterior_alpha = imputation_posterior_alpha[0]
+        imputation_posterior_beta = imputation_posterior_beta[0]
+
+        true_alpha = each_guide.sample_population_normalized_count_reps[rep_i]
+        true_beta = each_guide.control_population_normalized_count_reps[rep_i]
+
+        # Calculate KL divergence between the posterior and the likelihood
+        KL_guide_imputation_score: float = StatisticalHelperMethods.KL_beta(true_alpha, true_beta, imputation_posterior_alpha, imputation_posterior_beta)
+
+        # Add weight towards guides that deviate from the negative control.
+        KL_negative_control_deviation = 0
+        if each_guide.position is not None:
+            KL_negative_control_deviation: float = StatisticalHelperMethods.KL_beta(negative_control_guide_sample_population_total_normalized_counts_reps[rep_i], negative_control_guide_control_population_total_normalized_counts_reps[rep_i], each_guide_sample_population_spatial_contribution_reps[0], each_guide_control_population_spatial_contribution_reps[0])
+
+            KL_guide_imputation_score = (1+(deviation_weights[rep_i]*KL_negative_control_deviation))*KL_guide_imputation_score
+
+        # Add score to the main placeholder to get the final sum
+        KL_guide_imputation_score_total = KL_guide_imputation_score_total + KL_guide_imputation_score 
         
-        if len(guide_set) == 0:
-            return 0,0,0
-
-        KL_guide_imputation_score_total: float = 0
-
-        neighborhood_optimization_guide_sample_size_i = len(guide_set) if neighborhood_optimization_guide_sample_size > len(guide_set) else neighborhood_optimization_guide_sample_size
-        sampled_guide_set = random.sample(guide_set, neighborhood_optimization_guide_sample_size_i)
-        for each_guide in sampled_guide_set:
-            # Get the posterior
-            imputation_posterior_alpha, imputation_posterior_beta, each_guide_sample_population_spatial_contribution_reps, each_guide_control_population_spatial_contribution_reps = ModelInference.perform_neighboorhood_score_imputation(each_guide, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_imputation_prior_strength_test, neighborhood_imputation_likelihood_strength_test, [rep_i], neighborhood_bandwidth)
-
-            imputation_posterior_alpha = imputation_posterior_alpha[0]
-            imputation_posterior_beta = imputation_posterior_beta[0]
-
-            true_alpha = each_guide.sample_population_normalized_count_reps[rep_i]
-            true_beta = each_guide.control_population_normalized_count_reps[rep_i]
-
-            # Calculate KL divergence between the posterior and the likelihood
-            KL_guide_imputation_score: float = StatisticalHelperMethods.KL_beta(true_alpha, true_beta, imputation_posterior_alpha, imputation_posterior_beta)
-
-            # Add weight towards guides that deviate from the negative control.
-            KL_negative_control_deviation = 0
-            if each_guide.position is not None:
-                KL_negative_control_deviation: float = StatisticalHelperMethods.KL_beta(negative_control_guide_sample_population_total_normalized_counts_reps[rep_i], negative_control_guide_control_population_total_normalized_counts_reps[rep_i], each_guide_sample_population_spatial_contribution_reps[0], each_guide_control_population_spatial_contribution_reps[0])
-
-                KL_guide_imputation_score = (1+(deviation_weights[rep_i]*KL_negative_control_deviation))*KL_guide_imputation_score
-
-            # Add score to the main placeholder to get the final sum
-            KL_guide_imputation_score_total = KL_guide_imputation_score_total + KL_guide_imputation_score 
-            
-        return KL_guide_imputation_score_total, neighborhood_optimization_guide_sample_size_i, len(guide_set)
+    return KL_guide_imputation_score_total, neighborhood_optimization_guide_sample_size_i, len(guide_set)
 
 
-    @staticmethod
-    def objective_function_of_all_guides(rep_i: int,
+def neighborhood_imputation_objective_function_of_all_guides(rep_i: int,
+                                    neighborhood_optimization_guide_sample_size: int,
+                                    experiment_guide_sets: ExperimentGuideSets,
+                                    negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
+                                    negative_control_guide_control_population_total_normalized_counts_reps: List[float],
+                                    neighborhood_bandwidth: float,
+                                    deviation_weights: List[float],
+                                    params: Tuple[float, float]):
+    
+    # Iterate through each guide to test prior with tested weight
+
+    KL_guide_imputation_score_total_negative, negative_sampled_n, negative_total_n = neighborhood_imputation_objective_function_of_each_guide_set(rep_i, experiment_guide_sets.negative_control_guides, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
+
+    KL_guide_imputation_score_total_positive, positive_sampled_n, positive_total_n = neighborhood_imputation_objective_function_of_each_guide_set(rep_i, experiment_guide_sets.positive_control_guides, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
+
+    KL_guide_imputation_score_total_observation, observation_sampled_n, observation_total_n = neighborhood_imputation_objective_function_of_each_guide_set(rep_i, experiment_guide_sets.observation_guides, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
+    
+    total_n = (negative_total_n+positive_total_n+observation_total_n)
+    
+    KL_guide_imputation_score_total_negative_avg = np.inf if negative_sampled_n == 0 else KL_guide_imputation_score_total_negative/negative_sampled_n
+    KL_guide_imputation_score_total_positive_avg = np.inf if positive_sampled_n == 0 else KL_guide_imputation_score_total_positive/positive_sampled_n
+    KL_guide_imputation_score_total_observation_avg = np.inf if observation_sampled_n == 0 else KL_guide_imputation_score_total_observation/observation_sampled_n
+    KL_guide_imputation_score_total_combined_avg = np.inf if total_n == 0 else (
+            (0 if negative_sampled_n == 0 else (KL_guide_imputation_score_total_negative/negative_sampled_n)*negative_total_n) + 
+            (0 if positive_sampled_n == 0 else (KL_guide_imputation_score_total_positive/positive_sampled_n)*positive_total_n) + 
+            (0 if observation_sampled_n == 0 else (KL_guide_imputation_score_total_observation/observation_sampled_n)*observation_total_n)
+            ) / total_n # NOTE: Because the optimization is performed on mini-batches, need to consider the mini-batch size when calculating the combined average score. 
+
+    return KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg
+
+def neighborhood_imputation_weighted_objective_function_of_all_guides(rep_i: int, 
                                         neighborhood_optimization_guide_sample_size: int,
                                         experiment_guide_sets: ExperimentGuideSets,
                                         negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
                                         negative_control_guide_control_population_total_normalized_counts_reps: List[float],
                                         neighborhood_bandwidth: float,
                                         deviation_weights: List[float],
+                                        KL_guide_set_weights: Union[List[float], None], 
                                         params: Tuple[float, float]):
-        
-        # Iterate through each guide to test prior with tested weight
+    KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = NeighborhoodImputationOptimizer.neighborhood_imputation_objective_function_of_all_guides(rep_i, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
+    
+    if KL_guide_set_weights is None:
+        return KL_guide_imputation_score_total_combined_avg
+    else:
+        combined_score = (KL_guide_set_weights[0]*KL_guide_imputation_score_total_negative_avg) + (KL_guide_set_weights[1]*KL_guide_imputation_score_total_positive_avg) + (KL_guide_set_weights[2]*KL_guide_imputation_score_total_observation_avg)
+        return combined_score
 
-        KL_guide_imputation_score_total_negative, negative_sampled_n, negative_total_n = NeighborhoodImputationOptimizer.objective_function_of_each_guide_set(rep_i, experiment_guide_sets.negative_control_guides, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
+class NeighborhoodImputationOptimizer:
+    neighborhood_imputation_objective_function_of_each_guide_set = staticmethod(neighborhood_imputation_objective_function_of_each_guide_set)
+    neighborhood_imputation_objective_function_of_all_guides = staticmethod(neighborhood_imputation_objective_function_of_all_guides)
+    neighborhood_imputation_weighted_objective_function_of_all_guides = staticmethod(neighborhood_imputation_weighted_objective_function_of_all_guides)
 
-        KL_guide_imputation_score_total_positive, positive_sampled_n, positive_total_n = NeighborhoodImputationOptimizer.objective_function_of_each_guide_set(rep_i, experiment_guide_sets.positive_control_guides, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
-
-        KL_guide_imputation_score_total_observation, observation_sampled_n, observation_total_n = NeighborhoodImputationOptimizer.objective_function_of_each_guide_set(rep_i, experiment_guide_sets.observation_guides, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
-        
-        total_n = (negative_total_n+positive_total_n+observation_total_n)
-        
-        KL_guide_imputation_score_total_negative_avg = np.inf if negative_sampled_n == 0 else KL_guide_imputation_score_total_negative/negative_sampled_n
-        KL_guide_imputation_score_total_positive_avg = np.inf if positive_sampled_n == 0 else KL_guide_imputation_score_total_positive/positive_sampled_n
-        KL_guide_imputation_score_total_observation_avg = np.inf if observation_sampled_n == 0 else KL_guide_imputation_score_total_observation/observation_sampled_n
-        KL_guide_imputation_score_total_combined_avg = np.inf if total_n == 0 else (
-                (0 if negative_sampled_n == 0 else (KL_guide_imputation_score_total_negative/negative_sampled_n)*negative_total_n) + 
-                (0 if positive_sampled_n == 0 else (KL_guide_imputation_score_total_positive/positive_sampled_n)*positive_total_n) + 
-                (0 if observation_sampled_n == 0 else (KL_guide_imputation_score_total_observation/observation_sampled_n)*observation_total_n)
-                ) / total_n # NOTE: Because the optimization is performed on mini-batches, need to consider the mini-batch size when calculating the combined average score. 
-
-        return KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg
-        
     @staticmethod
     def optimize_neighborhood_imputation_prior_strength(
         experiment_guide_sets: ExperimentGuideSets, 
@@ -535,30 +615,14 @@ class NeighborhoodImputationOptimizer:
         neighborhood_bandwidth: float, 
         deviation_weights: List[float], 
         KL_guide_set_weights: List[float],
+        cores: int,
         neighborhood_optimization_guide_sample_size: int = 50) -> Tuple[List[float], List[float]]:
-
-
-        def weighted_objective_function_of_all_guides(rep_i: int, 
-                                        experiment_guide_sets: ExperimentGuideSets,
-                                        negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
-                                        negative_control_guide_control_population_total_normalized_counts_reps: List[float],
-                                        neighborhood_bandwidth: float,
-                                        deviation_weights: List[float],
-                                        guide_set_weights: Union[List[float], None], 
-                                        params: Tuple[float, float]):
-            KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = NeighborhoodImputationOptimizer.objective_function_of_all_guides(rep_i, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, params)
-            
-            if KL_guide_set_weights is None:
-                return KL_guide_imputation_score_total_combined_avg
-            else:
-                combined_score = (KL_guide_set_weights[0]*KL_guide_imputation_score_total_negative_avg) + (KL_guide_set_weights[1]*KL_guide_imputation_score_total_positive_avg) + (KL_guide_set_weights[2]*KL_guide_imputation_score_total_observation_avg)
-                return combined_score
 
         neighborhood_imputation_prior_strength_selected: List[float] = []
         neighborhood_imputation_likelihood_strength_selected: List[float] = []
 
         for rep_i in replicate_indices:
-            weighted_objective_function_of_all_guides_p = functools.partial(weighted_objective_function_of_all_guides, rep_i, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, KL_guide_set_weights)
+            weighted_objective_function_of_all_guides_p = functools.partial(neighborhood_imputation_weighted_objective_function_of_all_guides, rep_i, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, KL_guide_set_weights)
 
 
             param_vals=[]
@@ -570,7 +634,15 @@ class NeighborhoodImputationOptimizer:
                 loss_vals.append(f)
             
             # TODO: Set bounds as just positive - ask chatgpt how...
-            res = scipy.optimize.differential_evolution(weighted_objective_function_of_all_guides_p, bounds=[(0.000001, 5),(0.000001, 5)], callback=store_values, tol = 0.6) 
+            max_posterior_bounds_a = 100
+            max_posterior_bounds_b = 100
+            optimizer_bounds_a = max_posterior_bounds_a / negative_control_guide_sample_population_total_normalized_counts_reps[rep_i]
+            optimizer_bounds_b = max_posterior_bounds_b / negative_control_guide_control_population_total_normalized_counts_reps[rep_i]
+            optimizer_upper_bound = np.min([optimizer_bounds_a, optimizer_bounds_b])
+            tolerance = optimizer_upper_bound / 1000
+            print("Neighborhood optimization upper bound: {}".format(optimizer_upper_bound))
+
+            res = scipy.optimize.differential_evolution(weighted_objective_function_of_all_guides_p, bounds=[(0.000001, optimizer_upper_bound),(0.000001, optimizer_upper_bound)], callback=store_values, tol=0.05, workers=cores) 
 
             X=[param[0] for param in param_vals]
             Y=[param[1] for param in param_vals]
@@ -590,7 +662,7 @@ class NeighborhoodImputationOptimizer:
             if res.success is True:
                 neighborhood_imputation_prior_strength, neighborhood_imputation_likelihood_strength = res.x
                 
-                KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = NeighborhoodImputationOptimizer.objective_function_of_all_guides(rep_i, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, res.x)
+                KL_guide_imputation_score_total_combined_avg, KL_guide_imputation_score_total_negative_avg, KL_guide_imputation_score_total_positive_avg, KL_guide_imputation_score_total_observation_avg = neighborhood_imputation_objective_function_of_all_guides(rep_i, neighborhood_optimization_guide_sample_size, experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_bandwidth, deviation_weights, res.x)
 
                 print("KL Negative Set Average: {}".format(KL_guide_imputation_score_total_negative_avg))
                 print("KL Positive Set Average: {}".format(KL_guide_imputation_score_total_positive_avg))
@@ -608,65 +680,42 @@ class NeighborhoodImputationOptimizer:
 
         return neighborhood_imputation_prior_strength_selected, neighborhood_imputation_likelihood_strength_selected
 
-class ShrinkageOptimizer:
+
+
+def shrinkage_optimizer_weighted_objective_function_of_all_guides(rep_i: int, 
+                                        spatial_guides_for_fit: List[Guide],
+                                        singleton_guides_for_fit: List[Guide], 
+                                        neighborhood_experiment_guide_sets: ExperimentGuideSets,
+                                        negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
+                                        negative_control_guide_control_population_total_normalized_counts_reps: List[float],
+                                        neighborhood_imputation_prior_strength: List[float],
+                                        neighborhood_imputation_likelihood_strength: List[float],
+                                        singleton_imputation_prior_strength: List[float],
+                                        neighborhood_bandwidth: float,
+                                        enable_neighborhood_prior: bool,
+                                        monte_carlo_trials: int,
+                                        random_seed: Union[int, None],
+                                        params: Tuple[float]):
+    # TODO: There is a major inefficiency for this optimization function and the other optimization function, is that even though optimization is done for each rep_i, the posterior is calculated for all reps then indexed for the rep_i argument... I think being able to index the arguments to the perform_score_imputation should work if the typehint is correct. 
+    shrinkage_prior_strength_test=params[0]
     
-    @staticmethod
-    def weighted_objective_function_of_all_guides(rep_i: int, 
-                                            spatial_guides_for_fit: List[Guide],
-                                            singleton_guides_for_fit: List[Guide], 
-                                            negative_control_guide_sample_population_total_normalized_counts_reps: List[float],
-                                            negative_control_guide_control_population_total_normalized_counts_reps: List[float],
-                                            neighborhood_imputation_prior_strength: List[float],
-                                            neighborhood_imputation_likelihood_strength: List[float],
-                                            singleton_imputation_prior_strength: List[float],
-                                            neighborhood_bandwidth: float,
-                                            enable_neighborhood_prior: bool,
-                                            monte_carlo_trials: int,
-                                            random_seed: Union[int, None],
-                                            params: Tuple[float]):
-        # TODO: There is a major inefficiency for this optimization function and the other optimization function, is that even though optimization is done for each rep_i, the posterior is calculated for all reps then indexed for the rep_i argument... I think being able to index the arguments to the perform_score_imputation should work if the typehint is correct. 
-        shrinkage_prior_strength_test=params[0]
-        
-        total_normalized_counts_per_guide_spatial : List[float] = [each_guide.sample_population_normalized_count_reps[rep_i] + each_guide.control_population_normalized_count_reps[rep_i] for each_guide in spatial_guides_for_fit]
-        total_normalized_counts_per_guide_singleton : List[float] = [each_guide.sample_population_normalized_count_reps[rep_i] + each_guide.control_population_normalized_count_reps[rep_i] for each_guide in singleton_guides_for_fit]
-        
-        # NOTE: The first list corresponds to each guide, the second list corresponds to number of replicates, the value is the mean LFC
-        guide_count_posterior_LFC_normalized_mean_list_per_guide_spatial : List[float] = []
-        guide_count_posterior_LFC_normalized_mean_list_per_guide_singleton : List[float] = []
+    total_normalized_counts_per_guide_spatial : List[float] = [each_guide.sample_population_normalized_count_reps[rep_i] + each_guide.control_population_normalized_count_reps[rep_i] for each_guide in spatial_guides_for_fit]
+    total_normalized_counts_per_guide_singleton : List[float] = [each_guide.sample_population_normalized_count_reps[rep_i] + each_guide.control_population_normalized_count_reps[rep_i] for each_guide in singleton_guides_for_fit]
+    
+    # NOTE: The first list corresponds to each guide, the second list corresponds to number of replicates, the value is the mean LFC
+    guide_count_posterior_LFC_normalized_mean_list_per_guide_spatial : List[float] = []
+    guide_count_posterior_LFC_normalized_mean_list_per_guide_singleton : List[float] = []
 
-        if enable_neighborhood_prior:
-            for each_guide in spatial_guides_for_fit:
-                # TODO: The code for calculating the posterior inputs for the spatial_imputation model could be modularized so that there are not any repetitive code
-
-                # By default, set the unweighted prior as the negative control normalized counts
-                unweighted_prior_alpha: float = np.asarray([negative_control_guide_sample_population_total_normalized_counts_reps[rep_i]])
-                unweighted_prior_beta: float = np.asarray([negative_control_guide_control_population_total_normalized_counts_reps[rep_i]])
-
-                # If able to use spatial information, replace the unweighted priors with the spatial imputational posterior
-                imputation_posterior_alpha, imputation_posterior_beta, _, _ = ModelInference.perform_neighboorhood_score_imputation(each_guide, spatial_experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_imputation_prior_strength, neighborhood_imputation_likelihood_strength, [rep_i], neighborhood_bandwidth)
-
-                # Propogate the imputation posterior to the shrinkage prior
-                unweighted_prior_alpha = imputation_posterior_alpha
-                unweighted_prior_beta = imputation_posterior_beta
-
-                shrinkage_result: ShrinkageResult = ModelInference.perform_score_shrinkage(each_guide, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, shrinkage_prior_strength_test, unweighted_prior_alpha, unweighted_prior_beta, monte_carlo_trials, random_seed, [rep_i])
-
-                # NOTE: List[List[float]], first list is each replicate, second list is the monte-carlo samples. We want the mean of the monte-carlo samples next
-                guide_count_posterior_LFC_samples_normalized_list: List[List[float]] = shrinkage_result.guide_count_posterior_LFC_samples_normalized_list
-                
-                # This corresponds to the guide posterior mean LFC for each replicate separately for shrinkage prior weight optimization. After optimization of the shrinkage weight, the mean LFC of the averaged posterior of the replicates will be used.
-                guide_count_posterior_LFC_normalized_mean_list: List[float] = np.mean(guide_count_posterior_LFC_samples_normalized_list, axis=0) 
-                guide_count_posterior_LFC_normalized_mean_list_per_guide_spatial.append(guide_count_posterior_LFC_normalized_mean_list[rep_i])
-        
-        for each_guide in singleton_guides_for_fit:
-
+    if enable_neighborhood_prior:
+        for each_guide in spatial_guides_for_fit:
             # TODO: The code for calculating the posterior inputs for the spatial_imputation model could be modularized so that there are not any repetitive code
-            imputation_posterior_alpha, imputation_posterior_beta = ModelInference.perform_singleton_score_imputation(each_guide, 
-                    negative_control_guide_sample_population_total_normalized_counts_reps, 
-                    negative_control_guide_control_population_total_normalized_counts_reps, 
-                    singleton_imputation_prior_strength,
-                    [rep_i])
 
+            # By default, set the unweighted prior as the negative control normalized counts
+            unweighted_prior_alpha: float = np.asarray([negative_control_guide_sample_population_total_normalized_counts_reps[rep_i]])
+            unweighted_prior_beta: float = np.asarray([negative_control_guide_control_population_total_normalized_counts_reps[rep_i]])
+
+            # If able to use spatial information, replace the unweighted priors with the spatial imputational posterior
+            imputation_posterior_alpha, imputation_posterior_beta, _, _ = ModelInference.perform_neighboorhood_score_imputation(each_guide, neighborhood_experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, neighborhood_imputation_prior_strength, neighborhood_imputation_likelihood_strength, [rep_i], neighborhood_bandwidth)
 
             # Propogate the imputation posterior to the shrinkage prior
             unweighted_prior_alpha = imputation_posterior_alpha
@@ -674,27 +723,54 @@ class ShrinkageOptimizer:
 
             shrinkage_result: ShrinkageResult = ModelInference.perform_score_shrinkage(each_guide, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, shrinkage_prior_strength_test, unweighted_prior_alpha, unweighted_prior_beta, monte_carlo_trials, random_seed, [rep_i])
 
-
             # NOTE: List[List[float]], first list is each replicate, second list is the monte-carlo samples. We want the mean of the monte-carlo samples next
             guide_count_posterior_LFC_samples_normalized_list: List[List[float]] = shrinkage_result.guide_count_posterior_LFC_samples_normalized_list
             
             # This corresponds to the guide posterior mean LFC for each replicate separately for shrinkage prior weight optimization. After optimization of the shrinkage weight, the mean LFC of the averaged posterior of the replicates will be used.
             guide_count_posterior_LFC_normalized_mean_list: List[float] = np.mean(guide_count_posterior_LFC_samples_normalized_list, axis=0) 
+            guide_count_posterior_LFC_normalized_mean_list_per_guide_spatial.append(guide_count_posterior_LFC_normalized_mean_list[rep_i])
+    
+    for each_guide in singleton_guides_for_fit:
 
-            guide_count_posterior_LFC_normalized_mean_list_per_guide_singleton.append(guide_count_posterior_LFC_normalized_mean_list[rep_i]) 
+        # TODO: The code for calculating the posterior inputs for the spatial_imputation model could be modularized so that there are not any repetitive code
+        imputation_posterior_alpha, imputation_posterior_beta = ModelInference.perform_singleton_score_imputation(each_guide, 
+                negative_control_guide_sample_population_total_normalized_counts_reps, 
+                negative_control_guide_control_population_total_normalized_counts_reps, 
+                singleton_imputation_prior_strength,
+                [rep_i])
 
-        #
-        # Calculate the Breusch-Pagan statistic
-        #
-        # Prepare X - which is the normalized count, since the objective is to reduce hederoscedasticity across count
-        total_normalized_count_per_guide_X: List[float] = np.concatenate([total_normalized_counts_per_guide_spatial, total_normalized_counts_per_guide_singleton])
 
-        # Prepare Y - which is the LFC score, since we want to reduce heteroscedasticity of the LFC
-        LFC_posterior_mean_per_guide_Y: List[float] = np.concatenate([guide_count_posterior_LFC_normalized_mean_list_per_guide_spatial, guide_count_posterior_LFC_normalized_mean_list_per_guide_singleton])
+        # Propogate the imputation posterior to the shrinkage prior
+        unweighted_prior_alpha = imputation_posterior_alpha
+        unweighted_prior_beta = imputation_posterior_beta
 
-        BP_statistic = StatisticalHelperMethods.calculate_breusch_pagan(total_normalized_count_per_guide_X, LFC_posterior_mean_per_guide_Y) 
+        shrinkage_result: ShrinkageResult = ModelInference.perform_score_shrinkage(each_guide, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, shrinkage_prior_strength_test, unweighted_prior_alpha, unweighted_prior_beta, monte_carlo_trials, random_seed, [rep_i])
+
+
+        # NOTE: List[List[float]], first list is each replicate, second list is the monte-carlo samples. We want the mean of the monte-carlo samples next
+        guide_count_posterior_LFC_samples_normalized_list: List[List[float]] = shrinkage_result.guide_count_posterior_LFC_samples_normalized_list
         
-        return BP_statistic
+        # This corresponds to the guide posterior mean LFC for each replicate separately for shrinkage prior weight optimization. After optimization of the shrinkage weight, the mean LFC of the averaged posterior of the replicates will be used.
+        guide_count_posterior_LFC_normalized_mean_list: List[float] = np.mean(guide_count_posterior_LFC_samples_normalized_list, axis=0) 
+
+        guide_count_posterior_LFC_normalized_mean_list_per_guide_singleton.append(guide_count_posterior_LFC_normalized_mean_list[rep_i]) 
+
+    #
+    # Calculate the Breusch-Pagan statistic
+    #
+    # Prepare X - which is the normalized count, since the objective is to reduce hederoscedasticity across count
+    total_normalized_count_per_guide_X: List[float] = np.concatenate([total_normalized_counts_per_guide_spatial, total_normalized_counts_per_guide_singleton])
+
+    # Prepare Y - which is the LFC score, since we want to reduce heteroscedasticity of the LFC
+    LFC_posterior_mean_per_guide_Y: List[float] = np.concatenate([guide_count_posterior_LFC_normalized_mean_list_per_guide_spatial, guide_count_posterior_LFC_normalized_mean_list_per_guide_singleton])
+
+    BP_statistic = StatisticalHelperMethods.calculate_breusch_pagan(total_normalized_count_per_guide_X, LFC_posterior_mean_per_guide_Y) 
+    
+    return BP_statistic
+
+
+class ShrinkageOptimizer:
+    shrinkage_optimizer_weighted_objective_function_of_all_guides = staticmethod(shrinkage_optimizer_weighted_objective_function_of_all_guides)
 
     @staticmethod
     def optimize_shrinkage_prior_strength(neighborhood_experiment_guide_sets: Union[ExperimentGuideSets, None],
@@ -738,9 +814,10 @@ class ShrinkageOptimizer:
 
         shrinkage_prior_strength_selected: List[float] = []
         for rep_i in replicate_indices:
-            weighted_objective_function_of_all_guides_p = functools.partial(ShrinkageOptimizer.weighted_objective_function_of_all_guides, rep_i,
+            weighted_objective_function_of_all_guides_p = functools.partial(shrinkage_optimizer_weighted_objective_function_of_all_guides, rep_i,
                                             spatial_guides_for_fit,
                                             singleton_guides_for_fit,
+                                            neighborhood_experiment_guide_sets,
                                             negative_control_guide_sample_population_total_normalized_counts_reps,
                                             negative_control_guide_control_population_total_normalized_counts_reps,
                                             neighborhood_imputation_prior_strength,
@@ -758,6 +835,7 @@ class ShrinkageOptimizer:
                 print("X: {}, f: {}".format(x, f))
                 param_vals.append(x)
                 loss_vals.append(f)
+
 
             # TODO: Set bounds as just positive - ask chatgpt how...
             res = scipy.optimize.minimize(weighted_objective_function_of_all_guides_p, [20], bounds=[(0.000001, 1000)], method="TNC", callback=store_values) 
@@ -798,8 +876,10 @@ def perform_adjustment(
     KL_guide_set_weights: Union[List[float], None] = None, 
     shrinkage_prior_strength: Union[List[float], None] = None,
     monte_carlo_trials: int = 1000,
+    neighborhood_optimization_guide_sample_size:int = 50,
     posterior_estimator: str = "mean",
-    random_seed: Union[int, None] = None
+    random_seed: Union[int, None] = None,
+    cores=1
     ):
     raw_negative_control_guides = copy.deepcopy(negative_control_guides)
     raw_positive_control_guides = copy.deepcopy(positive_control_guides)
@@ -814,11 +894,11 @@ def perform_adjustment(
 
     replicate_indices = np.asarray(range(num_replicates))
 
-    for guide in negative_control_guides:
+    for guide in raw_negative_control_guides:
         assert num_replicates == len(guide.sample_population_raw_count_reps) == len(guide.control_population_raw_count_reps), "Guide {} number of counts does not equal replicates"
-    for guide in observation_guides:
+    for guide in raw_positive_control_guides:
         assert num_replicates == len(guide.sample_population_raw_count_reps) == len(guide.control_population_raw_count_reps), "Guide {} number of counts does not equal replicates"
-    for guide in observation_guides:
+    for guide in raw_observation_guides:
         assert num_replicates == len(guide.sample_population_raw_count_reps) == len(guide.control_population_raw_count_reps), "Guide {} number of counts does not equal replicates"
 
 
@@ -836,9 +916,9 @@ def perform_adjustment(
             guide.sample_population_normalized_count_reps = (guide.sample_population_raw_count_reps/sample_population_scaling_factors) + 1
             guide.control_population_normalized_count_reps = (guide.control_population_raw_count_reps/control_population_scaling_factors) + 1
 
-    normalize_guide_counts(negative_control_guides, sample_population_scaling_factors, control_population_scaling_factors)
-    normalize_guide_counts(positive_control_guides, sample_population_scaling_factors, control_population_scaling_factors)
-    normalize_guide_counts(observation_guides, sample_population_scaling_factors, control_population_scaling_factors)
+    normalize_guide_counts(raw_negative_control_guides, sample_population_scaling_factors, control_population_scaling_factors)
+    normalize_guide_counts(raw_positive_control_guides, sample_population_scaling_factors, control_population_scaling_factors)
+    normalize_guide_counts(raw_observation_guides, sample_population_scaling_factors, control_population_scaling_factors)
     
     
     if neighborhood_imputation_prior_strength is not None:
@@ -864,15 +944,15 @@ def perform_adjustment(
         KL_guide_set_weights = np.asarray(KL_guide_set_weights)
 
     # Create all guides set used for informing neighborhood prior, performing final shrinkage, and visualization    
-    experiment_guide_sets: ExperimentGuideSets = ExperimentGuideSets(negative_control_guides, positive_control_guides, observation_guides)
+    experiment_guide_sets: ExperimentGuideSets = ExperimentGuideSets(raw_negative_control_guides, raw_positive_control_guides, raw_observation_guides)
 
     # Get total normalized counts of negative controls in both populations to be used as initial prior
     negative_control_guide_sample_population_total_normalized_counts_reps: List[int] = np.repeat(0., num_replicates)
     negative_control_guide_control_population_total_normalized_counts_reps: List[int] = np.repeat(0., num_replicates)
-    negative_control_guide: Guide
-    for negative_control_guide in negative_control_guides:
-            negative_control_guide_sample_population_total_normalized_counts_reps = negative_control_guide_sample_population_total_normalized_counts_reps + negative_control_guide.sample_population_normalized_count_reps
-            negative_control_guide_control_population_total_normalized_counts_reps = negative_control_guide_control_population_total_normalized_counts_reps + negative_control_guide.control_population_normalized_count_reps
+    raw_negative_control_guide: Guide
+    for raw_negative_control_guide in raw_negative_control_guides:
+            negative_control_guide_sample_population_total_normalized_counts_reps = negative_control_guide_sample_population_total_normalized_counts_reps + raw_negative_control_guide.sample_population_normalized_count_reps
+            negative_control_guide_control_population_total_normalized_counts_reps = negative_control_guide_control_population_total_normalized_counts_reps + raw_negative_control_guide.control_population_normalized_count_reps
 
 
     neighborhood_experiment_guide_sets: ExperimentGuideSets = None
@@ -896,7 +976,7 @@ def perform_adjustment(
     if enable_neighborhood_prior:
         if (neighborhood_imputation_prior_strength is None) or (neighborhood_imputation_likelihood_strength is None):
             print("Optimizing neighborhood imputation weights")
-            neighborhood_imputation_prior_strength,neighborhood_imputation_likelihood_strength = NeighborhoodImputationOptimizer.optimize_neighborhood_imputation_prior_strength(neighborhood_experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, replicate_indices, neighborhood_bandwidth, deviation_weights, KL_guide_set_weights)
+            neighborhood_imputation_prior_strength,neighborhood_imputation_likelihood_strength = NeighborhoodImputationOptimizer.optimize_neighborhood_imputation_prior_strength(neighborhood_experiment_guide_sets, negative_control_guide_sample_population_total_normalized_counts_reps, negative_control_guide_control_population_total_normalized_counts_reps, replicate_indices, neighborhood_bandwidth, deviation_weights, KL_guide_set_weights, cores, neighborhood_optimization_guide_sample_size)
             print("Selected neighborhood imputation weights: prior={}, likelihood={}".format(neighborhood_imputation_prior_strength, neighborhood_imputation_likelihood_strength))
         
     if singleton_imputation_prior_strength is None:
@@ -906,7 +986,8 @@ def perform_adjustment(
             negative_control_guide_sample_population_total_normalized_counts_reps, 
             negative_control_guide_control_population_total_normalized_counts_reps,
             replicate_indices,
-            KL_guide_set_weights)
+            KL_guide_set_weights,
+            cores)
         print("Selected singleton imputation weights: {}".format(singleton_imputation_prior_strength))
 
 
@@ -933,23 +1014,75 @@ def perform_adjustment(
     def add_shrinkage_result_to_guide(each_guide: Guide,
                                         shrinkage_result: ShrinkageResult):
         # NOTE: List[List[float]], first list is each replicate, second list is the monte-carlo samples. We want the mean of the monte-carlo samples next
+
+        
+        shrinkage_result.posterior_guide_count_sample_alpha
+        shrinkage_result.posterior_guide_count_control_beta
+        
         guide_count_posterior_LFC_samples_normalized_list: List[List[float]] = shrinkage_result.guide_count_posterior_LFC_samples_normalized_list 
 
-        guide_count_posterior_LFC_samples_normalized_average = np.mean(guide_count_posterior_LFC_samples_normalized_list, axis=0)
+        guide_count_LFC_samples_normalized_list: List[List[float]] = shrinkage_result.guide_count_LFC_samples_normalized_list
+        
+        guide_count_posterior_LFC_samples_normalized_list_rescaled = np.asarray([np.log(np.exp(guide_count_posterior_LFC_samples_normalized_list[rep_i]) * (((shrinkage_result.posterior_guide_count_sample_alpha[rep_i] + shrinkage_result.posterior_guide_count_control_beta[rep_i]) * negative_control_guide_control_population_total_normalized_counts_reps[rep_i]) / ((negative_control_guide_sample_population_total_normalized_counts_reps[rep_i] + negative_control_guide_control_population_total_normalized_counts_reps[rep_i]) * shrinkage_result.posterior_guide_count_control_beta[rep_i]))) for rep_i in replicate_indices])
 
-        LFC_estimate_combined = None
+        guide_count_posterior_LFC_samples_normalized_average = np.mean(guide_count_posterior_LFC_samples_normalized_list, axis=0)
+        guide_count_posterior_LFC_samples_normalized_rescaled_average =  np.mean(guide_count_posterior_LFC_samples_normalized_list_rescaled, axis=0)
+
+        LFC_estimate_combined_mean = np.mean(guide_count_posterior_LFC_samples_normalized_average)
+        LFC_estimate_per_replicate_mean = np.mean(guide_count_posterior_LFC_samples_normalized_list, axis=1)
+
+        LFC_estimate_combined_mean_rescaled = np.mean(guide_count_posterior_LFC_samples_normalized_rescaled_average)
+        LFC_estimate_per_replicate_mean_rescaled = np.mean(guide_count_posterior_LFC_samples_normalized_list_rescaled, axis=1)
         if posterior_estimator.upper() == "MEAN":
-            LFC_estimate_combined = np.mean(guide_count_posterior_LFC_samples_normalized_average)
-            LFC_estimate_per_replicate = np.mean(guide_count_posterior_LFC_samples_normalized_list, axis=1)
+            LFC_estimate_combined = LFC_estimate_combined_mean
+            LFC_estimate_per_replicate = LFC_estimate_per_replicate_mean
+
+            LFC_estimate_combined_rescaled = LFC_estimate_combined_mean_rescaled
+            LFC_estimate_per_replicate_rescaled = LFC_estimate_per_replicate_mean_rescaled
         elif posterior_estimator.upper() == "MODE":
             LFC_estimate_combined = StatisticalHelperMethods.calculate_map(guide_count_posterior_LFC_samples_normalized_average)
             LFC_estimate_per_replicate =  np.asarray([StatisticalHelperMethods.calculate_map(guide_count_posterior_LFC_samples_normalized) for guide_count_posterior_LFC_samples_normalized in guide_count_posterior_LFC_samples_normalized_list])
 
+            LFC_estimate_combined_rescaled = StatisticalHelperMethods.calculate_map(guide_count_posterior_LFC_samples_normalized_rescaled_average)
+            LFC_estimate_per_replicate_rescaled =  np.asarray([StatisticalHelperMethods.calculate_map(guide_count_posterior_LFC_samples_normalized_rescaled) for guide_count_posterior_LFC_samples_normalized_rescaled in guide_count_posterior_LFC_samples_normalized_list_rescaled])
+
+        ###
         LFC_estimate_combined_CI = StatisticalHelperMethods.calculate_credible_interval(guide_count_posterior_LFC_samples_normalized_average)
         LFC_estimate_combined_std = np.std(guide_count_posterior_LFC_samples_normalized_average)
+        
+        LFC_estimate_combined_CI_rescaled = StatisticalHelperMethods.calculate_credible_interval(guide_count_posterior_LFC_samples_normalized_rescaled_average)
+        LFC_estimate_combined_std_rescaled = np.std(guide_count_posterior_LFC_samples_normalized_rescaled_average)
 
+
+        ##
         LFC_estimate_per_replicate_CI = np.asarray([StatisticalHelperMethods.calculate_credible_interval(guide_count_posterior_LFC_samples_normalized_rep) for guide_count_posterior_LFC_samples_normalized_rep in guide_count_posterior_LFC_samples_normalized_list])
         LFC_estimate_per_replicate_std = np.asarray([np.std(guide_count_posterior_LFC_samples_normalized_rep) for guide_count_posterior_LFC_samples_normalized_rep in guide_count_posterior_LFC_samples_normalized_list])
+
+        LFC_estimate_per_replicate_CI_rescaled = np.asarray([StatisticalHelperMethods.calculate_credible_interval(guide_count_posterior_LFC_samples_normalized_rep_rescaled) for guide_count_posterior_LFC_samples_normalized_rep_rescaled in guide_count_posterior_LFC_samples_normalized_list_rescaled])
+        LFC_estimate_per_replicate_std_rescaled = np.asarray([np.std(guide_count_posterior_LFC_samples_normalized_rep_rescaled) for guide_count_posterior_LFC_samples_normalized_rep_rescaled in guide_count_posterior_LFC_samples_normalized_list_rescaled])
+        
+        ##
+        LFC_estimate_combined_prob0 = StatisticalHelperMethods.calculate_norm_prob_0(LFC_estimate_combined_mean, LFC_estimate_combined_std)
+        LFC_estimate_per_replicate_prob0 = [StatisticalHelperMethods.calculate_norm_prob_0(LFC_estimate_per_replicate_mean[rep_i], LFC_estimate_per_replicate_std[rep_i]) for rep_i in replicate_indices]
+
+        LFC_estimate_combined_prob_lt0 = StatisticalHelperMethods.calculate_norm_lt_0_mc(guide_count_posterior_LFC_samples_normalized_average)
+        LFC_estimate_combined_prob_gt0 = StatisticalHelperMethods.calculate_norm_gt_0_mc(guide_count_posterior_LFC_samples_normalized_average)
+        
+        LFC_estimate_per_replicate_lt0 = [StatisticalHelperMethods.calculate_norm_lt_0_mc(guide_count_posterior_LFC_samples_normalized_rep_i) for guide_count_posterior_LFC_samples_normalized_rep_i in guide_count_posterior_LFC_samples_normalized_list]
+        LFC_estimate_per_replicate_gt0 = [StatisticalHelperMethods.calculate_norm_gt_0_mc(guide_count_posterior_LFC_samples_normalized_rep_i) for guide_count_posterior_LFC_samples_normalized_rep_i in guide_count_posterior_LFC_samples_normalized_list]
+
+
+
+        LFC_estimate_combined_prob0_rescaled = StatisticalHelperMethods.calculate_norm_prob_0(LFC_estimate_combined_mean_rescaled, LFC_estimate_combined_std_rescaled)
+        LFC_estimate_per_replicate_prob0_rescaled = [StatisticalHelperMethods.calculate_norm_prob_0(LFC_estimate_per_replicate_mean_rescaled[rep_i], LFC_estimate_per_replicate_std_rescaled[rep_i]) for rep_i in replicate_indices]
+
+        LFC_estimate_combined_prob_lt0_rescaled = StatisticalHelperMethods.calculate_norm_lt_0_mc(guide_count_posterior_LFC_samples_normalized_rescaled_average)
+        LFC_estimate_combined_prob_gt0_rescaled = StatisticalHelperMethods.calculate_norm_gt_0_mc(guide_count_posterior_LFC_samples_normalized_rescaled_average)
+        
+        LFC_estimate_per_replicate_lt0_rescaled = [StatisticalHelperMethods.calculate_norm_lt_0_mc(guide_count_posterior_LFC_samples_normalized_rescaled_rep_i) for guide_count_posterior_LFC_samples_normalized_rescaled_rep_i in guide_count_posterior_LFC_samples_normalized_list_rescaled]
+        LFC_estimate_per_replicate_gt0_rescaled = [StatisticalHelperMethods.calculate_norm_gt_0_mc(guide_count_posterior_LFC_samples_normalized_rescaled_rep_i) for guide_count_posterior_LFC_samples_normalized_rescaled_rep_i in guide_count_posterior_LFC_samples_normalized_list_rescaled]
+
+
 
 
         each_guide.LFC_estimate_combined = LFC_estimate_combined
@@ -960,7 +1093,43 @@ def perform_adjustment(
 
         each_guide.LFC_estimate_per_replicate_CI = LFC_estimate_per_replicate_CI 
         each_guide.LFC_estimate_per_replicate_std = LFC_estimate_per_replicate_std
-        
+
+        each_guide.LFC_estimate_combined_prob0 = LFC_estimate_combined_prob0
+        each_guide.LFC_estimate_combined_prob_lt0 = LFC_estimate_combined_prob_lt0
+        each_guide.LFC_estimate_combined_prob_gt0 = LFC_estimate_combined_prob_gt0
+
+        each_guide.LFC_estimate_per_replicate_prob0 = LFC_estimate_per_replicate_prob0
+        each_guide.LFC_estimate_per_replicate_lt0 = LFC_estimate_per_replicate_lt0
+        each_guide.LFC_estimate_per_replicate_gt0 = LFC_estimate_per_replicate_gt0
+
+        each_guide.guide_count_posterior_LFC_samples_normalized_list = guide_count_posterior_LFC_samples_normalized_list
+        each_guide.guide_count_posterior_LFC_samples_normalized_average = guide_count_posterior_LFC_samples_normalized_average
+
+
+
+
+        each_guide.LFC_estimate_combined_rescaled = LFC_estimate_combined_rescaled
+        each_guide.LFC_estimate_per_replicate_rescaled = LFC_estimate_per_replicate_rescaled
+
+        each_guide.LFC_estimate_combined_CI_rescaled = LFC_estimate_combined_CI_rescaled
+        each_guide.LFC_estimate_combined_std_rescaled = LFC_estimate_combined_std_rescaled
+
+        each_guide.LFC_estimate_per_replicate_CI_rescaled = LFC_estimate_per_replicate_CI_rescaled
+        each_guide.LFC_estimate_per_replicate_std_rescaled = LFC_estimate_per_replicate_std_rescaled
+
+        each_guide.LFC_estimate_combined_prob0_rescaled = LFC_estimate_combined_prob0_rescaled
+        each_guide.LFC_estimate_combined_prob_lt0_rescaled = LFC_estimate_combined_prob_lt0_rescaled
+        each_guide.LFC_estimate_combined_prob_gt0_rescaled = LFC_estimate_combined_prob_gt0_rescaled
+
+        each_guide.LFC_estimate_per_replicate_prob0_rescaled = LFC_estimate_per_replicate_prob0_rescaled
+        each_guide.LFC_estimate_per_replicate_lt0_rescaled = LFC_estimate_per_replicate_lt0_rescaled
+        each_guide.LFC_estimate_per_replicate_gt0_rescaled = LFC_estimate_per_replicate_gt0_rescaled
+
+        each_guide.guide_count_posterior_LFC_samples_normalized_list_rescaled = guide_count_posterior_LFC_samples_normalized_list_rescaled
+        each_guide.guide_count_posterior_LFC_samples_normalized_average_rescaled = guide_count_posterior_LFC_samples_normalized_rescaled_average
+
+        each_guide.guide_count_LFC_samples_normalized_list = guide_count_LFC_samples_normalized_list
+
         return each_guide
 
     # Perform final model inference:
@@ -1022,20 +1191,22 @@ def perform_adjustment(
         singletons_experiment_guide_sets.positive_control_guides = inference_singleton_guide_set(singletons_experiment_guide_sets.positive_control_guides)
 
 
-        negative_control_guides = np.concatenate([neighborhood_experiment_guide_sets.negative_control_guides, singletons_experiment_guide_sets.negative_control_guides])
-        observation_guides = np.concatenate([neighborhood_experiment_guide_sets.observation_guides, singletons_experiment_guide_sets.observation_guides])
-        positive_control_guides = np.concatenate([neighborhood_experiment_guide_sets.positive_control_guides, singletons_experiment_guide_sets.positive_control_guides])
+        adjusted_negative_control_guides = np.concatenate([neighborhood_experiment_guide_sets.negative_control_guides, singletons_experiment_guide_sets.negative_control_guides])
+        adjusted_observation_guides = np.concatenate([neighborhood_experiment_guide_sets.observation_guides, singletons_experiment_guide_sets.observation_guides])
+        adjusted_positive_control_guides = np.concatenate([neighborhood_experiment_guide_sets.positive_control_guides, singletons_experiment_guide_sets.positive_control_guides])
 
     else:
-        negative_control_guides = inference_singleton_guide_set(experiment_guide_sets.negative_control_guides)
-        observation_guides = inference_singleton_guide_set(experiment_guide_sets.observation_guides)
-        positive_control_guides = inference_singleton_guide_set(experiment_guide_sets.positive_control_guides)
+        adjusted_negative_control_guides = inference_singleton_guide_set(experiment_guide_sets.negative_control_guides)
+        adjusted_observation_guides = inference_singleton_guide_set(experiment_guide_sets.observation_guides)
+        adjusted_positive_control_guides = inference_singleton_guide_set(experiment_guide_sets.positive_control_guides)
 
 
     return CrisprShrinkageResult(
-        adjusted_negative_control_guides=negative_control_guides,
-        adjusted_observation_guides=observation_guides,
-        adjusted_positive_control_guides=positive_control_guides,
+        adjusted_negative_control_guides=adjusted_negative_control_guides,
+        adjusted_observation_guides=adjusted_observation_guides,
+        adjusted_positive_control_guides=adjusted_positive_control_guides,
+        negative_control_guide_sample_population_total_normalized_counts_reps=negative_control_guide_sample_population_total_normalized_counts_reps,
+        negative_control_guide_control_population_total_normalized_counts_reps=negative_control_guide_control_population_total_normalized_counts_reps,
         shrinkage_prior_strength=shrinkage_prior_strength,
         neighborhood_imputation_prior_strength=neighborhood_imputation_prior_strength,
         neighborhood_imputation_likelihood_strength=neighborhood_imputation_likelihood_strength,
@@ -1075,13 +1246,15 @@ if __name__ == "__main__":
 
     reps = 3
     max_dup_factor = 30
-    max_guide_molecule_factor = 50
+    max_guide_molecule_factor = 20
 
 
     get_positive_proportion = lambda pos_prop: ((1-pos_prop)*target_null_proportion) + (pos_prop)*target_positive_population
 
     pop1_dup_factor_list = np.asarray([np.round(uniform.rvs(1, max_dup_factor)) for _ in range(reps)])
     pop2_dup_factor_list = np.asarray([np.round(uniform.rvs(1, max_dup_factor)) for _ in range(reps)])
+
+    # This defines the function to generate the counts
 
     #expon.rvs(loc=1, scale=1000, size=num_guides)
     #uniform.rvs(2, 200, size=num_guides)
@@ -1099,7 +1272,8 @@ if __name__ == "__main__":
         
         return np.asarray(pop1_list_reps), np.asarray(pop2_list_reps)
 
-    
+    # This prepares the groun_truth regions
+
     get_kernel_values = lambda position, b,xrange : np.asarray([StatisticalHelperMethods.gaussian_kernel(i, position, b) for i in range(position-xrange, position+xrange+1)])
 
     normalize_kernel_values = lambda kernel_values: (kernel_values-kernel_values.min())/(kernel_values.max() - kernel_values.min())
@@ -1111,7 +1285,6 @@ if __name__ == "__main__":
     kernel_values_200 = normalize_kernel_values(get_kernel_values(200, 15, 15))
 
     tiling_length = 300
-
 
     positive_regions = [(50,5,kernel_values_50), (100,3,kernel_values_100), (150,10,kernel_values_150), (200,15,kernel_values_200)]
     observation_guides = []
@@ -1126,7 +1299,7 @@ if __name__ == "__main__":
 
         pop1_raw_count_reps = counts[0].transpose()[0]
         pop2_raw_count_reps = counts[1].transpose()[0]
-        guide = Guide(identifier="observation_{}".format(position), position=position, sample_population_raw_count_reps= pop1_raw_count_reps, control_population_raw_count_reps=pop2_raw_count_reps)
+        guide = Guide(identifier="observation_{}".format(position), position=position, sample_population_raw_count_reps= pop1_raw_count_reps, control_population_raw_count_reps=pop2_raw_count_reps, is_explanatory=True)
 
         observation_guides.append(guide)
 
@@ -1135,45 +1308,43 @@ if __name__ == "__main__":
         counts = get_counts(1, null_proportion)
         pop1_raw_count_reps = counts[0].transpose()[0]
         pop2_raw_count_reps = counts[1].transpose()[0]
-        guide = Guide(identifier="negative_{}".format(i), position=None, sample_population_raw_count_reps= pop1_raw_count_reps, control_population_raw_count_reps=pop2_raw_count_reps)
-
+        guide = Guide(identifier="negative_{}".format(i), position=None, sample_population_raw_count_reps= pop1_raw_count_reps, control_population_raw_count_reps=pop2_raw_count_reps, is_explanatory=False)
         negative_guides.append(guide)
 
     negative_guides = np.asarray(negative_guides)
-
 
     positive_guides = []
     for i in range(num_pos_guides):
         counts = get_counts(1, positive_proportion)
         pop1_raw_count_reps = counts[0].transpose()[0] + 1
         pop2_raw_count_reps = counts[1].transpose()[0] + 1
-        guide = Guide(identifier="positive_{}".format(i), position=None, sample_population_raw_count_reps= pop1_raw_count_reps, control_population_raw_count_reps=pop2_raw_count_reps)
-
+        guide = Guide(identifier="positive_{}".format(i), position=None, sample_population_raw_count_reps= pop1_raw_count_reps, control_population_raw_count_reps=pop2_raw_count_reps, is_explanatory=False)
         positive_guides.append(guide)
 
     positive_guides = np.asarray(positive_guides)
 
-
+    # LEFTOFF - just modifed result to return each guide set separately. So should be able to plot by position and verify that the shrinkage and all works well. Very interested to see if the negatiev controls are over shrunk. and positive controls. since they dont have position.
     results = perform_adjustment(
         negative_control_guides = negative_guides,
         positive_control_guides = positive_guides,
         observation_guides = observation_guides,
-        num_replicates = reps,
+        num_replicates = 3,
         include_observational_guides_in_fit = False,
         include_positive_control_guides_in_fit = False,
         sample_population_scaling_factors = pop1_dup_factor_list,
         control_population_scaling_factors = pop2_dup_factor_list,
         monte_carlo_trials = 1000,
+        neighborhood_optimization_guide_sample_size = 500,
         enable_neighborhood_prior =  True,
         neighborhood_bandwidth = 7,
-        neighborhood_imputation_prior_strength = [0.0001549,  0.00051831, 0.00070273],
-        neighborhood_imputation_likelihood_strength = [0.39062681, 0.3020106, 0.17357199], 
-        singleton_imputation_prior_strength = [0.00142066, 0.0013584,  0.00141909],
-        deviation_weights = [1,1,1],
+        neighborhood_imputation_prior_strength = [0.00123287, 0.00126275, 0.00129235],
+        neighborhood_imputation_likelihood_strength = [0.05219207, 0.05339028, 0.05260389],
+        singleton_imputation_prior_strength =  [0.00195427, 0.00178769, 0.00201526],
+        deviation_weights = np.asarray([10,10,10]),
         KL_guide_set_weights = None,
-        shrinkage_prior_strength = [1.50897246, 1.08297809, 2.45095095],
+        shrinkage_prior_strength = [1.29101373, 1.11547384, 0.3860163],
         posterior_estimator = "mean",
-        random_seed = 234
-        )
+        random_seed = 234,
+        cores=10
+    ) # LEFTOFF - Fix Bug shown below
 
-    print(results)
