@@ -46,6 +46,8 @@ class CrisprShrinkageVisualizationInput:
     negative_control_count_rep: List[List[Union[int, float]]]
     explanatory_count_rep: List[List[Union[int, float]]]
 
+    
+
 
 def prepare_crispr_shrinkage_visualization_input(crispr_shrinkage_result: CrisprShrinkageResult, use_rescaled: bool = True):
     replicate_indices = range(crispr_shrinkage_result.num_replicates)

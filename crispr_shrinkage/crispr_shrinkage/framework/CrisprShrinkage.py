@@ -170,12 +170,12 @@ class StatisticalHelperMethods:
         return float(Decimal.ln(StatisticalHelperMethods.precise_beta(alpha_g, beta_g)/(StatisticalHelperMethods.precise_beta(alpha_f, beta_f)))) + ((alpha_f - alpha_g)*(sc.digamma(alpha_f) - sc.digamma(alpha_f+beta_f))) + ((beta_f - beta_g)*(sc.digamma(beta_f) - sc.digamma(alpha_f+beta_f)))
 
     @staticmethod
-    def calculate_credible_interval(posterior_monte_carlo_samples: List[float], percentiles: Tuple[float, float] = (0.05, 0.95)) -> Tuple[float,float]:
+    def calculate_quantile_interval(samples: List[float], percentiles: Tuple[float, float] = (0.05, 0.95)) -> Tuple[float,float]:
         # TODO: Move this validation to the main function, to avoid validating on every call but instead just once
         assert percentiles[0] >= 0 and percentiles[0] <= 1, "First provided percentile must be within 0 and 1 inclusive, instead it is {}".format(percentiles[0])
         assert percentiles[1] >= 0 and percentiles[1] <= 1, "Second provided percentile must be within 0 and 1 inclusive, instead it is {}".format(percentiles[1])
 
-        credible_interval = (np.percentile(posterior_monte_carlo_samples, percentiles[0]*100), np.percentile(posterior_monte_carlo_samples, percentiles[1]*100))
+        credible_interval = (np.percentile(samples, percentiles[0]*100), np.percentile(samples, percentiles[1]*100))
 
         return credible_interval
     
@@ -239,6 +239,10 @@ class StatisticalHelperMethods:
     @staticmethod
     def calculate_norm_gt_0_mc(monte_carlo_samples: List[float]):
         return sum(monte_carlo_samples>0)/len(monte_carlo_samples)
+
+    @staticmethod
+    def calculate_interval_prob(samples: List[float], interval: Tuple[float, float]) -> float:
+        return sum(((samples >= interval[0]) & (samples <= interval[1]))) / len(samples)
 
 #-------------------------Helper and Inference functions
 def determine_guide_fit(guide: Guide, contains_position: Union[bool, None]):
@@ -878,6 +882,11 @@ def perform_adjustment(
     monte_carlo_trials: int = 1000,
     neighborhood_optimization_guide_sample_size:int = 50,
     posterior_estimator: str = "mean",
+    LFC_rescaled_null_interval: Tuple[float,float] = None,
+    LFC_null_interval: Tuple[float,float] = None,
+    LFC_rep_rescaled_null_interval: List[Tuple[float,float]] = None,
+    LFC_rep_null_interval: List[Tuple[float,float]] = None,
+    null_proportion: Tuple[float, float] = [0.05, 0.95],
     random_seed: Union[int, None] = None,
     cores=1
     ):
@@ -1014,19 +1023,14 @@ def perform_adjustment(
     def add_shrinkage_result_to_guide(each_guide: Guide,
                                         shrinkage_result: ShrinkageResult):
         # NOTE: List[List[float]], first list is each replicate, second list is the monte-carlo samples. We want the mean of the monte-carlo samples next
-
-        
-        shrinkage_result.posterior_guide_count_sample_alpha
-        shrinkage_result.posterior_guide_count_control_beta
-        
         guide_count_posterior_LFC_samples_normalized_list: List[List[float]] = shrinkage_result.guide_count_posterior_LFC_samples_normalized_list 
 
         guide_count_LFC_samples_normalized_list: List[List[float]] = shrinkage_result.guide_count_LFC_samples_normalized_list
         
         guide_count_posterior_LFC_samples_normalized_list_rescaled = np.asarray([np.log(np.exp(guide_count_posterior_LFC_samples_normalized_list[rep_i]) * (((shrinkage_result.posterior_guide_count_sample_alpha[rep_i] + shrinkage_result.posterior_guide_count_control_beta[rep_i]) * negative_control_guide_control_population_total_normalized_counts_reps[rep_i]) / ((negative_control_guide_sample_population_total_normalized_counts_reps[rep_i] + negative_control_guide_control_population_total_normalized_counts_reps[rep_i]) * shrinkage_result.posterior_guide_count_control_beta[rep_i]))) for rep_i in replicate_indices])
 
-        guide_count_posterior_LFC_samples_normalized_average = np.mean(guide_count_posterior_LFC_samples_normalized_list, axis=0)
-        guide_count_posterior_LFC_samples_normalized_rescaled_average =  np.mean(guide_count_posterior_LFC_samples_normalized_list_rescaled, axis=0)
+        guide_count_posterior_LFC_samples_normalized_average = guide_count_posterior_LFC_samples_normalized_list.flatten()
+        guide_count_posterior_LFC_samples_normalized_rescaled_average =  guide_count_posterior_LFC_samples_normalized_list_rescaled.flatten()
 
         LFC_estimate_combined_mean = np.mean(guide_count_posterior_LFC_samples_normalized_average)
         LFC_estimate_per_replicate_mean = np.mean(guide_count_posterior_LFC_samples_normalized_list, axis=1)
@@ -1047,18 +1051,18 @@ def perform_adjustment(
             LFC_estimate_per_replicate_rescaled =  np.asarray([StatisticalHelperMethods.calculate_map(guide_count_posterior_LFC_samples_normalized_rescaled) for guide_count_posterior_LFC_samples_normalized_rescaled in guide_count_posterior_LFC_samples_normalized_list_rescaled])
 
         ###
-        LFC_estimate_combined_CI = StatisticalHelperMethods.calculate_credible_interval(guide_count_posterior_LFC_samples_normalized_average)
+        LFC_estimate_combined_CI = StatisticalHelperMethods.calculate_quantile_interval(guide_count_posterior_LFC_samples_normalized_average)
         LFC_estimate_combined_std = np.std(guide_count_posterior_LFC_samples_normalized_average)
         
-        LFC_estimate_combined_CI_rescaled = StatisticalHelperMethods.calculate_credible_interval(guide_count_posterior_LFC_samples_normalized_rescaled_average)
+        LFC_estimate_combined_CI_rescaled = StatisticalHelperMethods.calculate_quantile_interval(guide_count_posterior_LFC_samples_normalized_rescaled_average)
         LFC_estimate_combined_std_rescaled = np.std(guide_count_posterior_LFC_samples_normalized_rescaled_average)
 
 
         ##
-        LFC_estimate_per_replicate_CI = np.asarray([StatisticalHelperMethods.calculate_credible_interval(guide_count_posterior_LFC_samples_normalized_rep) for guide_count_posterior_LFC_samples_normalized_rep in guide_count_posterior_LFC_samples_normalized_list])
+        LFC_estimate_per_replicate_CI = np.asarray([StatisticalHelperMethods.calculate_quantile_interval(guide_count_posterior_LFC_samples_normalized_rep) for guide_count_posterior_LFC_samples_normalized_rep in guide_count_posterior_LFC_samples_normalized_list])
         LFC_estimate_per_replicate_std = np.asarray([np.std(guide_count_posterior_LFC_samples_normalized_rep) for guide_count_posterior_LFC_samples_normalized_rep in guide_count_posterior_LFC_samples_normalized_list])
 
-        LFC_estimate_per_replicate_CI_rescaled = np.asarray([StatisticalHelperMethods.calculate_credible_interval(guide_count_posterior_LFC_samples_normalized_rep_rescaled) for guide_count_posterior_LFC_samples_normalized_rep_rescaled in guide_count_posterior_LFC_samples_normalized_list_rescaled])
+        LFC_estimate_per_replicate_CI_rescaled = np.asarray([StatisticalHelperMethods.calculate_quantile_interval(guide_count_posterior_LFC_samples_normalized_rep_rescaled) for guide_count_posterior_LFC_samples_normalized_rep_rescaled in guide_count_posterior_LFC_samples_normalized_list_rescaled])
         LFC_estimate_per_replicate_std_rescaled = np.asarray([np.std(guide_count_posterior_LFC_samples_normalized_rep_rescaled) for guide_count_posterior_LFC_samples_normalized_rep_rescaled in guide_count_posterior_LFC_samples_normalized_list_rescaled])
         
         ##
@@ -1134,7 +1138,7 @@ def perform_adjustment(
 
     # Perform final model inference:
     def inference_spatial_guide_set(spatial_guide_set: List[Guide], 
-                                    neighborhood_experiment_guide_sets: ExperimentGuideSets):
+                                    neighborhood_experiment_guide_sets: ExperimentGuideSets) -> List[Guide]:
         for each_guide in spatial_guide_set:
             # TODO: The code for calculating the posterior inputs for the spatial_imputation model could be modularized so that there are not any repetitive code
 
@@ -1158,7 +1162,7 @@ def perform_adjustment(
 
     # Perform final model inference:
     # TODO: This is copy of code below
-    def inference_singleton_guide_set(singleton_guide_set: List[Guide]):
+    def inference_singleton_guide_set(singleton_guide_set: List[Guide]) -> List[Guide]:
         for each_guide in singleton_guide_set:
             imputation_posterior_alpha, imputation_posterior_beta = ModelInference.perform_singleton_score_imputation(each_guide, 
             negative_control_guide_sample_population_total_normalized_counts_reps,
@@ -1200,6 +1204,37 @@ def perform_adjustment(
         adjusted_observation_guides = inference_singleton_guide_set(experiment_guide_sets.observation_guides)
         adjusted_positive_control_guides = inference_singleton_guide_set(experiment_guide_sets.positive_control_guides)
 
+    # Calculate the null interval based on the negative control values
+    if LFC_rescaled_null_interval is None:
+        all_negative_controls_LFC_rescaled: List[float] = np.asarray([guide.guide_count_posterior_LFC_samples_normalized_average_rescaled for guide in adjusted_negative_control_guides]).flatten()
+        LFC_rescaled_null_interval: Tuple[float,float] = StatisticalHelperMethods.calculate_quantile_interval(samples=all_negative_controls_LFC_rescaled, percentiles=null_proportion)
+    if LFC_null_interval is None:
+        all_negative_controls_LFC: List[float] = np.asarray([guide.guide_count_posterior_LFC_samples_normalized_average for guide in adjusted_negative_control_guides]).flatten()
+        LFC_null_interval: Tuple[float,float] = StatisticalHelperMethods.calculate_quantile_interval(samples=all_negative_controls_LFC, percentiles=null_proportion)
+    if LFC_rep_rescaled_null_interval is None:
+        negative_controls_LFC_rep_rescaled: List[List[float]] = [[guide.guide_count_posterior_LFC_samples_normalized_list_rescaled for guide in adjusted_negative_control_guides] for rep_i in replicate_indices]
+        LFC_rep_rescaled_null_interval: List[Tuple[float,float]] = [StatisticalHelperMethods.calculate_quantile_interval(samples=negative_controls_LFC_rep_rescaled_i, percentiles=null_proportion) for negative_controls_LFC_rep_rescaled_i in negative_controls_LFC_rep_rescaled]
+    if LFC_rep_null_interval is None:
+        negative_controls_LFC_rep: List[List[float]] = [[guide.guide_count_posterior_LFC_samples_normalized_list for guide in adjusted_negative_control_guides] for rep_i in replicate_indices]
+        LFC_rep_null_interval: List[Tuple[float,float]] = [StatisticalHelperMethods.calculate_quantile_interval(samples=negative_controls_LFC_rep_i, percentiles=null_proportion) for negative_controls_LFC_rep_i in negative_controls_LFC_rep]
+
+    # Set probability of null interval for each guide - create a function of this later, since need to perform on all the guide sets
+    def set_prob_null_interval(guide_set: List[Guide]) -> List[Guide]:
+        for guide in guide_set:
+            LFC_estimate_combined_prob_null_interval_rescaled: float = StatisticalHelperMethods.calculate_interval_prob(guide.guide_count_posterior_LFC_samples_normalized_average_rescaled, LFC_rescaled_null_interval)
+            LFC_estimate_combined_prob_null_interval: float = StatisticalHelperMethods.calculate_interval_prob(guide.guide_count_posterior_LFC_samples_normalized_average, LFC_null_interval)
+            LFC_estimate_per_replicate_prob_null_interval_rescaled = np.asarray([StatisticalHelperMethods.calculate_interval_prob(guide.guide_count_posterior_LFC_samples_normalized_list_rescaled[rep_i], LFC_rep_rescaled_null_interval[rep_i]) for rep_i in replicate_indices])
+            LFC_estimate_per_replicate_prob_null_interval = np.asarray([StatisticalHelperMethods.calculate_interval_prob(guide.guide_count_posterior_LFC_samples_normalized_list[rep_i], LFC_rep_null_interval[rep_i]) for rep_i in replicate_indices])
+
+            guide.LFC_estimate_combined_prob_null_interval_rescaled = LFC_estimate_combined_prob_null_interval_rescaled
+            guide.LFC_estimate_combined_prob_null_interval = LFC_estimate_combined_prob_null_interval 
+            guide.LFC_estimate_per_replicate_prob_null_interval_rescaled = LFC_estimate_per_replicate_prob_null_interval_rescaled 
+            guide.LFC_estimate_per_replicate_prob_null_interval = LFC_estimate_per_replicate_prob_null_interval 
+        return guide_set
+    
+    adjusted_negative_control_guides = set_prob_null_interval(adjusted_negative_control_guides)
+    adjusted_observation_guides = set_prob_null_interval(adjusted_observation_guides)
+    adjusted_positive_control_guides = set_prob_null_interval(adjusted_positive_control_guides)
 
     return CrisprShrinkageResult(
         adjusted_negative_control_guides=adjusted_negative_control_guides,
