@@ -61,6 +61,14 @@ class CrisprShrinkageResult:
             deviation_weights: Union[List[float], None],
             KL_guide_set_weights: Union[List[float], None],
             posterior_estimator: str,
+            all_negative_controls_LFC_rescaled: List[float],
+            all_negative_controls_LFC: List[float],
+            negative_controls_LFC_rep_rescaled: List[List[float]],
+            negative_controls_LFC_rep: List[List[float]],
+            LFC_rescaled_null_interval: Tuple[float,float],
+            LFC_null_interval: Tuple[float,float],
+            LFC_rep_rescaled_null_interval: List[Tuple[float,float]],
+            LFC_rep_null_interval: List[Tuple[float,float]],
             random_seed: Union[int, None]):
 
         self.adjusted_negative_control_guides=adjusted_negative_control_guides
@@ -87,6 +95,15 @@ class CrisprShrinkageResult:
         self.KL_guide_set_weights=KL_guide_set_weights
         self.posterior_estimator=posterior_estimator
         self.random_seed=random_seed
+
+        self.all_negative_controls_LFC_rescaled = all_negative_controls_LFC_rescaled
+        self.all_negative_controls_LFC = all_negative_controls_LFC
+        self.negative_controls_LFC_rep_rescaled = negative_controls_LFC_rep_rescaled
+        self.negative_controls_LFC_rep = negative_controls_LFC_rep
+        self.LFC_rescaled_null_interval = LFC_rescaled_null_interval
+        self.LFC_null_interval = LFC_null_interval
+        self.LFC_rep_rescaled_null_interval = LFC_rep_rescaled_null_interval
+        self.LFC_rep_null_interval = LFC_rep_null_interval
 
 class ShrinkageResult:
     def __init__(self, 
@@ -890,6 +907,8 @@ def perform_adjustment(
     random_seed: Union[int, None] = None,
     cores=1
     ):
+    random.seed(random_seed)
+
     raw_negative_control_guides = copy.deepcopy(negative_control_guides)
     raw_positive_control_guides = copy.deepcopy(positive_control_guides)
     raw_observation_guides = copy.deepcopy(observation_guides)
@@ -1212,10 +1231,10 @@ def perform_adjustment(
         all_negative_controls_LFC: List[float] = np.asarray([guide.guide_count_posterior_LFC_samples_normalized_average for guide in adjusted_negative_control_guides]).flatten()
         LFC_null_interval: Tuple[float,float] = StatisticalHelperMethods.calculate_quantile_interval(samples=all_negative_controls_LFC, percentiles=null_proportion)
     if LFC_rep_rescaled_null_interval is None:
-        negative_controls_LFC_rep_rescaled: List[List[float]] = [[guide.guide_count_posterior_LFC_samples_normalized_list_rescaled for guide in adjusted_negative_control_guides] for rep_i in replicate_indices]
+        negative_controls_LFC_rep_rescaled: List[List[float]] = [np.asarray([guide.guide_count_posterior_LFC_samples_normalized_list_rescaled[rep_i] for guide in adjusted_negative_control_guides]).flatten() for rep_i in replicate_indices]
         LFC_rep_rescaled_null_interval: List[Tuple[float,float]] = [StatisticalHelperMethods.calculate_quantile_interval(samples=negative_controls_LFC_rep_rescaled_i, percentiles=null_proportion) for negative_controls_LFC_rep_rescaled_i in negative_controls_LFC_rep_rescaled]
     if LFC_rep_null_interval is None:
-        negative_controls_LFC_rep: List[List[float]] = [[guide.guide_count_posterior_LFC_samples_normalized_list for guide in adjusted_negative_control_guides] for rep_i in replicate_indices]
+        negative_controls_LFC_rep: List[List[float]] = [np.asarray([guide.guide_count_posterior_LFC_samples_normalized_list[rep_i] for guide in adjusted_negative_control_guides]).flatten() for rep_i in replicate_indices]
         LFC_rep_null_interval: List[Tuple[float,float]] = [StatisticalHelperMethods.calculate_quantile_interval(samples=negative_controls_LFC_rep_i, percentiles=null_proportion) for negative_controls_LFC_rep_i in negative_controls_LFC_rep]
 
     # Set probability of null interval for each guide - create a function of this later, since need to perform on all the guide sets
@@ -1232,9 +1251,58 @@ def perform_adjustment(
             guide.LFC_estimate_per_replicate_prob_null_interval = LFC_estimate_per_replicate_prob_null_interval 
         return guide_set
     
+    def set_prob_greater_and_lesser_null(guide_set: List[Guide]) -> List[Guide]:
+        for guide in guide_set:
+            # Combined rescaled
+            all_negative_controls_LFC_rescaled_sampled: List[float] = np.random.choice( len(guide.guide_count_posterior_LFC_samples_normalized_average_rescaled))
+            guide_count_posterior_LFC_samples_normalized_average_rescaled_difference: List[float] = (guide.guide_count_posterior_LFC_samples_normalized_average_rescaled - all_negative_controls_LFC_rescaled_sampled)
+
+            LFC_estimate_combined_prob_greater_null_rescaled: float =  sum(guide_count_posterior_LFC_samples_normalized_average_rescaled_difference > 0)/len(guide_count_posterior_LFC_samples_normalized_average_rescaled_difference)
+            LFC_estimate_combined_prob_lesser_null_rescaled: float =  sum(guide_count_posterior_LFC_samples_normalized_average_rescaled_difference < 0)/len(guide_count_posterior_LFC_samples_normalized_average_rescaled_difference)
+            
+            guide.LFC_estimate_combined_prob_greater_null_rescaled = LFC_estimate_combined_prob_greater_null_rescaled
+            guide.LFC_estimate_combined_prob_lesser_null_rescaled = LFC_estimate_combined_prob_lesser_null_rescaled
+
+            # Combined regular
+            all_negative_controls_LFC_sampled: List[float] = np.random.choice(all_negative_controls_LFC, len(guide.guide_count_posterior_LFC_samples_normalized_average))
+            all_negative_controls_LFC_sampled_difference: List[float] = (guide.guide_count_posterior_LFC_samples_normalized_average - all_negative_controls_LFC_sampled)
+
+            LFC_estimate_combined_prob_greater_null: float =  sum(all_negative_controls_LFC_sampled_difference > 0)/len(all_negative_controls_LFC_sampled_difference)
+            LFC_estimate_combined_prob_lesser_null: float =  sum(all_negative_controls_LFC_sampled_difference < 0)/len(all_negative_controls_LFC_sampled_difference)
+            
+            guide.LFC_estimate_combined_prob_greater_null = LFC_estimate_combined_prob_greater_null
+            guide.LFC_estimate_combined_prob_lesser_null = LFC_estimate_combined_prob_lesser_null
+
+            # Replicate rescaled
+            negative_controls_LFC_rep_rescaled_sampled: List[List[float]] = [np.random.choice(negative_controls_LFC_rep_rescaled[rep_i], len(guide.guide_count_posterior_LFC_samples_normalized_list_rescaled[rep_i])) for rep_i in replicate_indices]
+            negative_controls_LFC_rep_rescaled_sampled_difference = [(guide.guide_count_posterior_LFC_samples_normalized_list_rescaled[rep_i] - negative_controls_LFC_rep_rescaled_sampled[rep_i]) for rep_i in replicate_indices]
+
+            LFC_estimate_per_replicate_prob_greater_null_rescaled: List[float] =  [sum(negative_controls_LFC_rep_rescaled_sampled_difference[rep_i] > 0)/len(negative_controls_LFC_rep_rescaled_sampled_difference[rep_i]) for rep_i in replicate_indices]
+            LFC_estimate_per_replicate_prob_lesser_null_rescaled: List[float] =  [sum(negative_controls_LFC_rep_rescaled_sampled_difference[rep_i] < 0)/len(negative_controls_LFC_rep_rescaled_sampled_difference[rep_i]) for rep_i in replicate_indices]
+
+            guide.LFC_estimate_per_replicate_prob_greater_null_rescaled = LFC_estimate_per_replicate_prob_greater_null_rescaled
+            guide.LFC_estimate_per_replicate_prob_lesser_null_rescaled = LFC_estimate_per_replicate_prob_lesser_null_rescaled
+
+
+            # Replicate regular
+            negative_controls_LFC_rep_sampled: List[List[float]] = [np.random.choice(negative_controls_LFC_rep[rep_i], len(guide.guide_count_posterior_LFC_samples_normalized_list[rep_i])) for rep_i in replicate_indices]
+            negative_controls_LFC_rep_sampled_difference = [(guide.guide_count_posterior_LFC_samples_normalized_list[rep_i] - negative_controls_LFC_rep_sampled[rep_i]) for rep_i in replicate_indices]
+
+            LFC_estimate_per_replicate_prob_greater_null: List[float] =  [sum(negative_controls_LFC_rep_sampled_difference[rep_i] > 0)/len(negative_controls_LFC_rep_sampled_difference[rep_i]) for rep_i in replicate_indices]
+            LFC_estimate_per_replicate_prob_lesser_null: List[float] =  [sum(negative_controls_LFC_rep_sampled_difference[rep_i] < 0)/len(negative_controls_LFC_rep_sampled_difference[rep_i]) for rep_i in replicate_indices]
+
+            guide.LFC_estimate_per_replicate_prob_greater_null = LFC_estimate_per_replicate_prob_greater_null
+            guide.LFC_estimate_per_replicate_prob_lesser_null = LFC_estimate_per_replicate_prob_lesser_null
+        
+        return guide_set
+
     adjusted_negative_control_guides = set_prob_null_interval(adjusted_negative_control_guides)
     adjusted_observation_guides = set_prob_null_interval(adjusted_observation_guides)
     adjusted_positive_control_guides = set_prob_null_interval(adjusted_positive_control_guides)
+
+    adjusted_negative_control_guides = set_prob_greater_and_lesser_null(adjusted_negative_control_guides)
+    adjusted_observation_guides = set_prob_greater_and_lesser_null(adjusted_observation_guides)
+    adjusted_positive_control_guides = set_prob_greater_and_lesser_null(adjusted_positive_control_guides)
 
     return CrisprShrinkageResult(
         adjusted_negative_control_guides=adjusted_negative_control_guides,
@@ -1260,7 +1328,15 @@ def perform_adjustment(
         KL_guide_set_weights=KL_guide_set_weights,
         neighborhood_bandwidth=neighborhood_bandwidth,
         posterior_estimator=posterior_estimator,
-        random_seed=random_seed
+        random_seed=random_seed,
+        all_negative_controls_LFC_rescaled=all_negative_controls_LFC_rescaled,
+        all_negative_controls_LFC=all_negative_controls_LFC,
+        negative_controls_LFC_rep_rescaled=negative_controls_LFC_rep_rescaled,
+        negative_controls_LFC_rep=negative_controls_LFC_rep,
+        LFC_rescaled_null_interval=LFC_rescaled_null_interval,
+        LFC_null_interval=LFC_null_interval,
+        LFC_rep_rescaled_null_interval=LFC_rep_rescaled_null_interval,
+        LFC_rep_null_interval=LFC_rep_null_interval
     )
 
 # TODO: Add tests
