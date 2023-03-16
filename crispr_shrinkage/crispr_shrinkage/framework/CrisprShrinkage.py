@@ -1254,7 +1254,7 @@ def perform_adjustment(
     def set_prob_greater_and_lesser_null(guide_set: List[Guide]) -> List[Guide]:
         for guide in guide_set:
             # Combined rescaled
-            all_negative_controls_LFC_rescaled_sampled: List[float] = np.random.choice( len(guide.guide_count_posterior_LFC_samples_normalized_average_rescaled))
+            all_negative_controls_LFC_rescaled_sampled: List[float] = np.random.choice(all_negative_controls_LFC_rescaled, len(guide.guide_count_posterior_LFC_samples_normalized_average_rescaled))
             guide_count_posterior_LFC_samples_normalized_average_rescaled_difference: List[float] = (guide.guide_count_posterior_LFC_samples_normalized_average_rescaled - all_negative_controls_LFC_rescaled_sampled)
 
             LFC_estimate_combined_prob_greater_null_rescaled: float =  sum(guide_count_posterior_LFC_samples_normalized_average_rescaled_difference > 0)/len(guide_count_posterior_LFC_samples_normalized_average_rescaled_difference)
