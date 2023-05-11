@@ -16,6 +16,28 @@ import logging
 import sys
 from scipy.stats import percentileofscore
 import random
+import pickle
+
+def save_or_load_pickle(directory, label, py_object = None, date_string = None):
+    '''Save a pickle for caching that is notated by the date'''
+    
+    if date_string == None:
+        today = date.today()
+        date_string = str(today.year) + ("0" + str(today.month) if today.month < 10 else str(today.month)) + str(today.day)
+    
+    filename = directory + label + "_" + date_string + '.pickle'
+    print(filename)
+    if py_object == None:
+        with open(filename, 'rb') as handle:
+            py_object = pickle.load(handle)
+            return py_object
+    else:
+        with open(filename, 'wb') as handle:
+            pickle.dump(py_object, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+def display_all_pickle_versions(directory, label):
+    '''Retrieve all pickles with a label, specifically to identify versions available'''
+    return [f for f in listdir(directory) if isfile(join(directory, f)) and label == f[:len(label)]]
 
 class Guide:
     def __init__(self, identifier, position: Union[int, None], sample_population_raw_count_reps: List[int], control_population_raw_count_reps: List[int],
@@ -158,12 +180,12 @@ class StatisticalHelperMethods:
 
     @staticmethod
     def precise_gamma(num: float) -> Decimal:
-        return np.exp(Decimal(sc.gammaln(num)) )
+        gamma_result = np.exp(Decimal(sc.gammaln(float(num))))
+        return gamma_result
     
     @staticmethod
     def precise_beta(a: float, b: float) -> Decimal:
-        
-        precise_beta_function = lambda a,b: (StatisticalHelperMethods.precise_gamma(a)*StatisticalHelperMethods.precise_gamma(b))/(StatisticalHelperMethods.precise_gamma(a+b))
+        precise_beta_function = lambda a_i,b_i: (StatisticalHelperMethods.precise_gamma(a_i)*StatisticalHelperMethods.precise_gamma(b_i))/(StatisticalHelperMethods.precise_gamma(a_i+b_i))
         try:
             #print("Running precise beta: {}, {}".format(a,b))
             return precise_beta_function(a,b)
@@ -183,7 +205,6 @@ class StatisticalHelperMethods:
     @staticmethod
     def KL_beta(alpha_f: float, beta_f: float, alpha_g: float, beta_g: float):
         # NOTE: Because the beta function can output extremely small values, using Decimal for higher precision
-        
         return float(Decimal.ln(StatisticalHelperMethods.precise_beta(alpha_g, beta_g)/(StatisticalHelperMethods.precise_beta(alpha_f, beta_f)))) + ((alpha_f - alpha_g)*(sc.digamma(alpha_f) - sc.digamma(alpha_f+beta_f))) + ((beta_f - beta_g)*(sc.digamma(beta_f) - sc.digamma(alpha_f+beta_f)))
 
     @staticmethod
