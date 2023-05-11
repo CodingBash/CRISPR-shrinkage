@@ -16,6 +16,28 @@ import logging
 import sys
 from scipy.stats import percentileofscore
 import random
+import pickle
+
+def save_or_load_pickle(directory, label, py_object = None, date_string = None):
+    '''Save a pickle for caching that is notated by the date'''
+    
+    if date_string == None:
+        today = date.today()
+        date_string = str(today.year) + ("0" + str(today.month) if today.month < 10 else str(today.month)) + str(today.day)
+    
+    filename = directory + label + "_" + date_string + '.pickle'
+    print(filename)
+    if py_object == None:
+        with open(filename, 'rb') as handle:
+            py_object = pickle.load(handle)
+            return py_object
+    else:
+        with open(filename, 'wb') as handle:
+            pickle.dump(py_object, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+def display_all_pickle_versions(directory, label):
+    '''Retrieve all pickles with a label, specifically to identify versions available'''
+    return [f for f in listdir(directory) if isfile(join(directory, f)) and label == f[:len(label)]]
 
 class Guide:
     def __init__(self, identifier, position: Union[int, None], sample_population_raw_count_reps: List[int], control_population_raw_count_reps: List[int],
@@ -158,12 +180,12 @@ class StatisticalHelperMethods:
 
     @staticmethod
     def precise_gamma(num: float) -> Decimal:
-        return np.exp(Decimal(sc.gammaln(num)) )
+        gamma_result = np.exp(Decimal(sc.gammaln(float(num))))
+        return gamma_result
     
     @staticmethod
     def precise_beta(a: float, b: float) -> Decimal:
-        
-        precise_beta_function = lambda a,b: (StatisticalHelperMethods.precise_gamma(a)*StatisticalHelperMethods.precise_gamma(b))/(StatisticalHelperMethods.precise_gamma(a+b))
+        precise_beta_function = lambda a_i,b_i: (StatisticalHelperMethods.precise_gamma(a_i)*StatisticalHelperMethods.precise_gamma(b_i))/(StatisticalHelperMethods.precise_gamma(a_i+b_i))
         try:
             #print("Running precise beta: {}, {}".format(a,b))
             return precise_beta_function(a,b)
@@ -183,7 +205,6 @@ class StatisticalHelperMethods:
     @staticmethod
     def KL_beta(alpha_f: float, beta_f: float, alpha_g: float, beta_g: float):
         # NOTE: Because the beta function can output extremely small values, using Decimal for higher precision
-        
         return float(Decimal.ln(StatisticalHelperMethods.precise_beta(alpha_g, beta_g)/(StatisticalHelperMethods.precise_beta(alpha_f, beta_f)))) + ((alpha_f - alpha_g)*(sc.digamma(alpha_f) - sc.digamma(alpha_f+beta_f))) + ((beta_f - beta_g)*(sc.digamma(beta_f) - sc.digamma(alpha_f+beta_f)))
 
     @staticmethod
@@ -807,7 +828,8 @@ class ShrinkageOptimizer:
         singleton_imputation_prior_strength: List[float],
         neighborhood_bandwidth: float,
         monte_carlo_trials: int,
-        random_seed: Union[int, None]) -> List[float]:
+        random_seed: Union[int, None],
+        cores: int) -> List[float]:
 
         if enable_neighborhood_prior is False:
             singleton_experiment_guide_sets.negative_control_guides = np.concatenate([neighborhood_experiment_guide_sets.negative_control_guides, singleton_experiment_guide_sets.negative_control_guides])
@@ -849,18 +871,26 @@ class ShrinkageOptimizer:
                                             monte_carlo_trials,
                                             random_seed)
 
+            #param_vals=[]
+            #loss_vals=[]
+            #def store_values(x, *args):
+            #    f = weighted_objective_function_of_all_guides_p(x)
+            #    print("X: {}, f: {}".format(x, f))
+            #    param_vals.append(x)
+            #    loss_vals.append(f)
             param_vals=[]
             loss_vals=[]
-            def store_values(x, *args):
+            def store_values(x, convergence):
                 f = weighted_objective_function_of_all_guides_p(x)
                 print("X: {}, f: {}".format(x, f))
                 param_vals.append(x)
                 loss_vals.append(f)
 
-
             # TODO: Set bounds as just positive - ask chatgpt how...
-            res = scipy.optimize.minimize(weighted_objective_function_of_all_guides_p, [20], bounds=[(0.000001, 1000)], method="TNC", callback=store_values) 
             
+            #res = scipy.optimize.minimize(weighted_objective_function_of_all_guides_p, [20], bounds=[(0.000001, 1000)], method="TNC", callback=store_values) 
+            res = scipy.optimize.differential_evolution(weighted_objective_function_of_all_guides_p, bounds=[(0.000001, 1000)], callback=store_values, tol=0.05, workers=cores) 
+
             plt.scatter([param[0] for param in param_vals], loss_vals)
             plt.xlabel("Prior Strength")
             plt.ylabel("Loss")
@@ -1035,7 +1065,8 @@ def perform_adjustment(
             singleton_imputation_prior_strength,
             neighborhood_bandwidth,
             monte_carlo_trials,
-            random_seed)
+            random_seed,
+            cores)
         print("Selected shrinkage prior weights: {}".format(shrinkage_prior_strength))
 
 
@@ -1453,7 +1484,7 @@ if __name__ == "__main__":
         singleton_imputation_prior_strength =  [0.00195427, 0.00178769, 0.00201526],
         deviation_weights = np.asarray([10,10,10]),
         KL_guide_set_weights = None,
-        shrinkage_prior_strength = [1.29101373, 1.11547384, 0.3860163],
+        shrinkage_prior_strength = None,#[1.29101373, 1.11547384, 0.3860163],
         posterior_estimator = "mean",
         random_seed = 234,
         cores=10
