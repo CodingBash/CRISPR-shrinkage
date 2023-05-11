@@ -807,7 +807,8 @@ class ShrinkageOptimizer:
         singleton_imputation_prior_strength: List[float],
         neighborhood_bandwidth: float,
         monte_carlo_trials: int,
-        random_seed: Union[int, None]) -> List[float]:
+        random_seed: Union[int, None],
+        cores: int) -> List[float]:
 
         if enable_neighborhood_prior is False:
             singleton_experiment_guide_sets.negative_control_guides = np.concatenate([neighborhood_experiment_guide_sets.negative_control_guides, singleton_experiment_guide_sets.negative_control_guides])
@@ -849,18 +850,26 @@ class ShrinkageOptimizer:
                                             monte_carlo_trials,
                                             random_seed)
 
+            #param_vals=[]
+            #loss_vals=[]
+            #def store_values(x, *args):
+            #    f = weighted_objective_function_of_all_guides_p(x)
+            #    print("X: {}, f: {}".format(x, f))
+            #    param_vals.append(x)
+            #    loss_vals.append(f)
             param_vals=[]
             loss_vals=[]
-            def store_values(x, *args):
+            def store_values(x, convergence):
                 f = weighted_objective_function_of_all_guides_p(x)
                 print("X: {}, f: {}".format(x, f))
                 param_vals.append(x)
                 loss_vals.append(f)
 
-
             # TODO: Set bounds as just positive - ask chatgpt how...
-            res = scipy.optimize.minimize(weighted_objective_function_of_all_guides_p, [20], bounds=[(0.000001, 1000)], method="TNC", callback=store_values) 
             
+            #res = scipy.optimize.minimize(weighted_objective_function_of_all_guides_p, [20], bounds=[(0.000001, 1000)], method="TNC", callback=store_values) 
+            res = scipy.optimize.differential_evolution(weighted_objective_function_of_all_guides_p, bounds=[(0.000001, 1000)], callback=store_values, tol=0.05, workers=cores) 
+
             plt.scatter([param[0] for param in param_vals], loss_vals)
             plt.xlabel("Prior Strength")
             plt.ylabel("Loss")
@@ -1035,7 +1044,8 @@ def perform_adjustment(
             singleton_imputation_prior_strength,
             neighborhood_bandwidth,
             monte_carlo_trials,
-            random_seed)
+            random_seed,
+            cores)
         print("Selected shrinkage prior weights: {}".format(shrinkage_prior_strength))
 
 
@@ -1453,7 +1463,7 @@ if __name__ == "__main__":
         singleton_imputation_prior_strength =  [0.00195427, 0.00178769, 0.00201526],
         deviation_weights = np.asarray([10,10,10]),
         KL_guide_set_weights = None,
-        shrinkage_prior_strength = [1.29101373, 1.11547384, 0.3860163],
+        shrinkage_prior_strength = None,#[1.29101373, 1.11547384, 0.3860163],
         posterior_estimator = "mean",
         random_seed = 234,
         cores=10
