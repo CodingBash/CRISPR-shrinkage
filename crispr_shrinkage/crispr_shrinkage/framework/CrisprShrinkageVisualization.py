@@ -51,14 +51,14 @@ class CrisprShrinkageVisualizationInput:
 
 def prepare_crispr_shrinkage_visualization_input(crispr_shrinkage_result: CrisprShrinkageResult, use_rescaled: bool = True):
     replicate_indices = range(crispr_shrinkage_result.num_replicates)
-    explanatory_guides = [guide for guide in np.concatenate([crispr_shrinkage_result.adjusted_observation_guides, crispr_shrinkage_result.adjusted_positive_control_guides, crispr_shrinkage_result.adjusted_negative_control_guides]) if ((guide.is_explanatory == True) & (guide.position != None))]
+    explanatory_guides = [guide for guide in np.concatenate([crispr_shrinkage_result.adjusted_observation_guides, crispr_shrinkage_result.adjusted_positive_control_guides, crispr_shrinkage_result.adjusted_negative_control_guides]) if guide.is_explanatory == True]
     
     for guide in explanatory_guides:
         assert guide.position is not None, "All explanatory guides (.is_explanatory==True) must contain a position"
 
     observational_position = np.asarray([guide.position for guide in crispr_shrinkage_result.adjusted_observation_guides])
     positive_positions = np.asarray([guide.position for guide in crispr_shrinkage_result.adjusted_positive_control_guides])
-    negative_positions = np.asarray([guide.position for guide in crispr_shrinkage_result.adjusted_positive_control_guides])
+    negative_positions = np.asarray([guide.position for guide in crispr_shrinkage_result.adjusted_negative_control_guides])
     explanatory_positions =  np.asarray([guide.position for guide in explanatory_guides])
 
     if use_rescaled:
